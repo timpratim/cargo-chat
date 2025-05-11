@@ -19,7 +19,7 @@ A fast, modular Rust-based retrieval-augmented generation (RAG) engine for code 
 1. **Clone the repository:**
    ```sh
    git clone <repo-url>
-   cd rag-rs
+   cd cargo-chat
    ```
 2. **Build the project:**
    ```sh
