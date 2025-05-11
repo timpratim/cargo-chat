@@ -1,4 +1,4 @@
-# rag_rs
+# cargo-chat
 
 A fast, modular Rust-based retrieval-augmented generation (RAG) engine for code and text. It provides efficient codebase chunking, embedding, approximate nearest neighbor (ANN) search, and reranking, all via a simple CLI.
 
@@ -31,7 +31,7 @@ A fast, modular Rust-based retrieval-augmented generation (RAG) engine for code 
 ### Index a Codebase
 
 ```sh
-rag_rs index --repo <PATH_TO_REPO> --out <OUTPUT_DIR> --model <MODEL_DIR>
+cargo-chat index --repo <PATH_TO_REPO> --out <OUTPUT_DIR> --model <MODEL_DIR>
 ```
 - `--repo <PATH>`: Path to the Rust code repository to index
 - `--out <DIR>`: Output directory for the ANN index (index.bin)
@@ -40,7 +40,7 @@ rag_rs index --repo <PATH_TO_REPO> --out <OUTPUT_DIR> --model <MODEL_DIR>
 ### Query an Index
 
 ```sh
-rag_rs query --index <INDEX_DIR> --model <MODEL_DIR> --rerank <RERANK_MODEL> --q <QUERY> --k <TOP_K>
+cargo-chat query --index <INDEX_DIR> --model <MODEL_DIR> --rerank <RERANK_MODEL> --q <QUERY> --k <TOP_K>
 ```
 - `--index <DIR>`: Directory containing the ANN index (index.bin)
 - `--model <DIR>`: Directory containing the embedding model
@@ -50,8 +50,8 @@ rag_rs query --index <INDEX_DIR> --model <MODEL_DIR> --rerank <RERANK_MODEL> --q
 
 #### Example
 ```sh
-rag_rs index --repo ./my_rust_project --out ./index --model ./model_dir
-rag_rs query --index ./index --model ./model_dir --rerank ./rerank_model --q "How to implement a binary search?" --k 5
+cargo-chat index --repo ./my_rust_project --out ./index --model ./model_dir
+cargo-chat query --index ./index --model ./model_dir --rerank ./rerank_model --q "How to implement a binary search?" --k 5
 ```
 
 ## Dependencies
