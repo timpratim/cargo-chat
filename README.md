@@ -1,4 +1,4 @@
-# cargo-chat
+# Cargo-chat
 
 A Rust-based Retrieval Augmented Generation (RAG) application for code repositories.
 
@@ -18,6 +18,7 @@ A Rust-based Retrieval Augmented Generation (RAG) application for code repositor
 *   Rust (latest stable recommended).
 *   An embedding model compatible with `embed-anything` (the default is `jinaai/jina-embeddings-v2-small-en`, which will be downloaded on first use).
 *   Optionally, an OpenAI API key set as an environment variable (`OPENAI_API_KEY`) for answer synthesis and advanced HyDE features.
+*   ONNX Runtime and its dependencies if you plan to use the reranking feature. Installation instructions can be found on the [ONNX Runtime website](https://onnxruntime.ai/docs/install/).
 
 ## Building
 
@@ -73,9 +74,8 @@ Once inside the REPL (`cargo-chat (...)> ` prompt), you can use the following co
 This command chunks the specified repository, generates embeddings for the code chunks, and builds an ANN index.
 
 ```bash
-# Example: Index the current directory, save the index to ./output_index, 
-# and use/cache the embedding model in ./embedding_model_cache
-RUST_LOG=info ./target/release/cargo_chat index --repo . --out ./output_index --model_dir ./embedding_model_cache
+# Example: Index the current directory, save the index to ./output_index
+RUST_LOG=info ./target/release/cargo_chat index --repo . --out ./output_index
 ```
 
 *   `--repo <path>`: Path to the code repository to index.
@@ -87,20 +87,17 @@ RUST_LOG=info ./target/release/cargo_chat index --repo . --out ./output_index --
 This command queries a previously built ANN index to find relevant code chunks and synthesize an answer.
 
 ```bash
-# Example: Query an index located in ./output_index, 
-# load the embedding model from ./embedding_model_cache, 
+# Example: Query an index located in ./output_index,
 # and optionally specify a reranker model.
 RUST_LOG=info ./target/release/cargo_chat query \
     --index_dir ./output_index \
-    --model_dir ./embedding_model_cache \
     --q "How do I implement batching for embeddings?" \
-    --k 3 \
-    # --use-rerank \
+    --k 3 \\
+    # --use-rerank \\
     # --rerank_model ./path_to_reranker_model
 ```
 
 *   `--index_dir <path>`: Path to the directory containing the `index.bin` file.
-*   `--model_dir <path>`: Path to the directory for the embedding model.
 *   `--q "<query_string>"`: The question you want to ask.
 *   `--k <num>`: The number of top results to retrieve.
 *   `--rerank_model <path>`: (Optional) Path to a reranking model directory.
@@ -138,9 +135,7 @@ The logs include timestamps and span events, which can show the duration of spec
 *   `RUST_LOG`: Controls logging verbosity (see Tracing section).
 
 ## Workspace Structure
-
 - `src/` — Main application logic (chunker, embedding, ann, rerank, main.rs)
-- `vector/` — Workspace crate providing the ANN index and vector types
 
 ## Dependencies
 - [clap] — CLI argument parsing
@@ -148,7 +143,6 @@ The logs include timestamps and span events, which can show the duration of spec
 - [walkdir] — Directory traversal
 - [code-splitter] — Code chunking
 - [tree-sitter-rust] — Rust syntax parsing
-- [vector] — ANN index
 - [embed_anything] — Embedding models
 - [bincode] — Serialization
 - [tokio] — Async runtime
