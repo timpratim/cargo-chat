@@ -1,19 +1,15 @@
-use clap::{Parser, Subcommand}; // Command line argument parsing
-use anyhow::Result; // Error handling
-use log::info; // Logging
-use serde_json; // JSON serialization
-mod chunker; // Chunking
-mod embedding; // Embedding
-mod ann; // ANN
-mod rerank; // Reranking
-mod hyde; // HyDE
-mod openai; // OpenAI
+use clap::{Parser, Subcommand};
+use anyhow::Result;
+use log::info;
+use serde_json;
+use tracing_subscriber::{fmt, fmt::format::FmtSpan, prelude::*, EnvFilter};
+mod chunker; mod embedding; mod ann; mod rerank; mod hyde;
+mod openai;
 // mod vector;
 use ann::ChunkMeta;
-use tracing_subscriber::{fmt, fmt::format::FmtSpan, prelude::*, EnvFilter};
 
-#[derive(Parser)] // Command line argument parsing
-struct Cli { 
+#[derive(Parser)]
+struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -31,7 +27,7 @@ enum Cmd {
     },
 }
 
-#[tokio::main] // Async main function
+#[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(fmt::layer().with_span_events(FmtSpan::CLOSE))
@@ -45,12 +41,26 @@ async fn main() -> Result<()> {
             let chunks = chunker::chunk_repo(&repo)?;
             let mut vecs = Vec::new();
             let mut metas = Vec::new();
-            //log embedding
+            
             info!("Embedding chunks...");
-            for (_i, (file_path, code_snippet)) in chunks.iter().enumerate() {
-                let v = embedder.embed(code_snippet).await?;
-                vecs.push(vector::Vector::<512>::from(v));
-                metas.push(ChunkMeta { file: file_path.clone(), code: code_snippet.clone() });
+            let app_batch_size = 32; // Configurable batch size
+
+            for chunk_batch in chunks.chunks(app_batch_size) {
+                // chunk_batch is a slice of (FilePath: String, CodeSnippet: String)
+                let texts_to_embed: Vec<&str> = chunk_batch.iter().map(|(_file_path, code_snippet)| code_snippet.as_str()).collect();
+                
+                if texts_to_embed.is_empty() {
+                    continue;
+                }
+
+                let embedding_arrays = embedder.embed_batch(&texts_to_embed, Some(texts_to_embed.len())).await?;
+
+                for (idx, embedding_array) in embedding_arrays.iter().enumerate() {
+                    // Retrieve the original file_path and code_snippet for metadata
+                    let (file_path, code_snippet) = &chunk_batch[idx];
+                    vecs.push(vector::Vector::<512>::from(*embedding_array));
+                    metas.push(ChunkMeta { file: file_path.clone(), code: code_snippet.clone() });
+                }
             }
             tracing::info!("Embeddings complete. {} embeddings generated.", vecs.len());
             let a = ann::Ann::<512, ChunkMeta>::build(&vecs, &metas);
@@ -59,7 +69,6 @@ async fn main() -> Result<()> {
                 std::fs::write(format!("{out}/index.bin"), serde_json::to_vec(&a)?)?;
             }
         }
-
         Cmd::Query { index, model, rerank, q, k, no_rerank } => {
             let embedder = embedding::Embedder::new(Some(model.clone()), ())?;
             let bytes   = std::fs::read(index.clone() + "/index.bin")?;
