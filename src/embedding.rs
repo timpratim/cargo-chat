@@ -6,11 +6,21 @@ pub struct Embedder {
     inner: EAEmbedder,
 }
 
+// Default model ID if not specified by the user
+const DEFAULT_MODEL_ID: &str = "jinaai/jina-embeddings-v2-small-en";
+
 impl Embedder {
-    #[tracing::instrument]
-    pub fn new(_model_dir: Option<String>, _device: ()) -> Result<Self> {
-        // For now, always use Jina local embedder. Extend as needed.
-        let inner = EAEmbedder::Text(TextEmbedder::Jina(Box::new(JinaEmbedder::default())));
+    #[tracing::instrument(fields(model_id = model_id.as_deref().unwrap_or(DEFAULT_MODEL_ID)))]
+    pub fn new(
+        model_id: Option<String>,
+    ) -> Result<Self> {
+        let model_to_load = model_id.as_deref().unwrap_or(DEFAULT_MODEL_ID);
+        
+     
+        let jina_embedder = JinaEmbedder::new(model_to_load, None, None).map_err(|e| 
+            anyhow::anyhow!("Failed to load JinaEmbedder model '{}': {}. Ensure the model exists and network is available if downloading.", model_to_load, e)
+        )?;
+        let inner = EAEmbedder::Text(TextEmbedder::Jina(Box::new(jina_embedder)));
         Ok(Self { inner })
     }
 
@@ -32,9 +42,9 @@ impl Embedder {
 
         for embedding_result in results {
             let vector = embedding_result.to_dense()?; // vector is Vec<f32>
-            if vector.len() != 512 {
+            if vector.len() != 512 { // Assuming Jina v2 models output 512. This might need to be dynamic if other models are used.
                 return Err(anyhow::anyhow!(
-                    "Embedding size mismatch: expected 512, got {}",
+                    "Embedding size mismatch: expected 512 for Jina v2, got {}",
                     vector.len()
                 ));
             }

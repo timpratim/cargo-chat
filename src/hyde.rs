@@ -5,10 +5,11 @@ use crate::ann::ChunkMeta;
 use anyhow::anyhow;
 use vector::Vector;
 use crate::rerank::Reranker;
+use std::sync::Arc;
 
 pub struct Hyde<'a, const D: usize> {
     pub openai: OpenAIClient,
-    pub embedder: Embedder,
+    pub embedder: Arc<Embedder>,
     pub ann: &'a Ann<D, ChunkMeta>,
     pub chunk_size: usize,
     pub reranker: Option<Reranker>,
@@ -28,12 +29,12 @@ pub struct HydeResponse {
 
 impl<'a, const D: usize> Hyde<'a, D> {
     #[tracing::instrument(skip(openai, embedder, ann, reranker))]
-    pub fn new(openai: OpenAIClient, embedder: Embedder, ann: &'a Ann<D, ChunkMeta>, chunk_size: usize, reranker: Option<Reranker>) -> Self {
+    pub fn new(openai: OpenAIClient, embedder: Arc<Embedder>, ann: &'a Ann<D, ChunkMeta>, chunk_size: usize, reranker: Option<Reranker>) -> Self {
         Self { openai, embedder, ann, chunk_size, reranker }
     }
 
-    #[tracing::instrument(skip(self, query))]
     /// Generate a hypothetical document for a given query using the OpenAI client.
+    #[tracing::instrument(skip(self, query))]
     pub async fn generate_hypothetical_document(&self, query: &str) -> anyhow::Result<String> {
         let prompt = format!(
             "Generate a hypothetical Rust code snippet or document that would answer the following query as if it existed in a codebase. The generated document must fit within {} characters.\n\nQuery: {}\n\nHypothetical Document:",
@@ -52,10 +53,8 @@ impl<'a, const D: usize> Hyde<'a, D> {
             if let Some(reranker) = &self.reranker {
                 let docs: Vec<&str> = results.iter().map(|r| r.meta.code.as_str()).collect();
                 let scores = reranker.score(vec![query], docs.clone(), 1)?;
-                // Pair each result with its score
                 let mut scored_results: Vec<(f32, HydeResult)> = results.into_iter().zip(scores.iter().map(|r| r.documents[0].relevance_score)).map(|(r, s)| (s, r)).collect();
-                // Sort by score descending
-                scored_results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+                scored_results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
                 results = scored_results.into_iter().map(|(_, r)| r).collect();
             }
         }
@@ -97,24 +96,22 @@ impl<'a, const D: usize> Hyde<'a, D> {
     /// Retrieve the top-k nearest neighbors for a query string.
     #[tracing::instrument(skip(self, query))]
     pub async fn similarity_search(&self, query: &str, k: usize) -> anyhow::Result<Vec<HydeResult>> {
-        // Only support D=512 for embedding output
         if D != 512 {
             return Err(anyhow::anyhow!("retrieve only supports D=512 (got D={})", D));
         }
         let embedding = self.embedder.embed(query).await?;
-        // SAFETY: We checked D==512 above, so this cast is safe
         let embedding_ref: &Vector<D> = unsafe { &*(&embedding as *const [f32; 512] as *const [f32; D]) };
         let results = self.ann.query(embedding_ref, k as i32);
         let hyde_results = results
             .into_iter()
             .enumerate()
-            .map(|(index, res)| HydeResult { index, distance: res.distance, meta: res.metadata.clone() })
+            .map(|(idx, res)| HydeResult { index: idx, distance: res.distance, meta: res.metadata.clone() })
             .collect();
         Ok(hyde_results)
     }
 
-    #[tracing::instrument(skip(self, query, code_refs))]
     /// Synthesize an LLM answer using the user query and top code references.
+    #[tracing::instrument(skip(self, query, code_refs))]
     pub async fn synthesize_answer(&self, query: &str, code_refs: &[HydeResult]) -> anyhow::Result<String> {
         let context_snippets: Vec<String> = code_refs.iter().map(|res| {
             format!("File: {}\nCode:\n{}\n", res.meta.file, res.meta.code)
