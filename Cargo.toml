@@ -26,6 +26,7 @@ tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 rustyline = { version = "15.0.0", features = [] } # Default features, add "with-file-history" below if needed via crate feature
 indicatif = { version = "0.17.7", features = ["rayon"] }
+futures         = "0.3"
 
 [features]
 default = []

@@ -7,6 +7,7 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::sync::Arc;
 use indicatif::{ProgressBar, ProgressStyle};
+use futures::future::join_all;
 
 mod chunker; mod embedding; mod ann; mod rerank; mod hyde;
 mod openai;
@@ -129,28 +130,65 @@ async fn execute_index_command(
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")?
         .progress_chars("#>-~");
 
-    let pb = ProgressBar::new(chunks.len() as u64);
+    let pb = Arc::new(ProgressBar::new(chunks.len() as u64));
     pb.set_style(pb_style);
 
-    for chunk_batch in chunks.chunks(app_batch_size) {
-        let texts_to_embed: Vec<&str> = chunk_batch.iter().map(|(_file_path, code_snippet)| code_snippet.as_str()).collect();
+    let mut processing_futures = Vec::new();
+
+    for (batch_idx, chunk_batch_slice) in chunks.chunks(app_batch_size).enumerate() {
+        let owned_chunk_batch: Vec<(String, String)> = chunk_batch_slice.to_vec();
+        let pb_clone = Arc::clone(&pb);
         
-        if texts_to_embed.is_empty() {
-            pb.inc(chunk_batch.len() as u64);
-            continue;
-        }
-
-        let embedding_arrays = embedder.embed_batch(&texts_to_embed, Some(texts_to_embed.len())).await?;
-
-        for (idx, embedding_array) in embedding_arrays.iter().enumerate() {
-            let (file_path, code_snippet) = &chunk_batch[idx];
-            vecs.push(vector::Vector::<512>::from(*embedding_array));
-            metas.push(ChunkMeta { file: file_path.clone(), code: code_snippet.clone() });
-        }
-        pb.inc(chunk_batch.len() as u64);
+        // The embedder reference can be used directly as it's Sync
+        // and the tasks are awaited within this function's scope.
+        let future = async move {
+            let texts_to_embed: Vec<String> = owned_chunk_batch.iter().map(|(_, code_snippet)| code_snippet.clone()).collect();
+            let batch_len = owned_chunk_batch.len() as u64; // Get length before potential move
+            
+            let result = if texts_to_embed.is_empty() {
+                Ok((owned_chunk_batch, Vec::new()))
+            } else {
+                let text_slices: Vec<&str> = texts_to_embed.iter().map(AsRef::as_ref).collect();
+                match embedder.embed_batch(&text_slices, Some(text_slices.len())).await {
+                    Ok(embeddings) => Ok((owned_chunk_batch, embeddings)),
+                    Err(e) => Err(anyhow::anyhow!("Error in batch {}: {}", batch_idx, e)),
+                }
+            };
+            
+            // Increment progress regardless of outcome for this batch's items
+            pb_clone.inc(batch_len); // Use the stored length
+            result
+        };
+        processing_futures.push(future);
     }
-    pb.finish_with_message("Embedding complete.");
-    tracing::info!("Embeddings complete. {} embeddings generated.", vecs.len());
+
+    let all_results = join_all(processing_futures).await;
+    
+    // Finish progress bar after all tasks are processed (successfully or not)
+    // but before potentially erroring out from results processing.
+    pb.finish_with_message("Embedding processing attempted for all chunks.");
+
+    for result_item in all_results {
+        match result_item {
+            Ok((original_chunk_batch, embedding_arrays)) => {
+                if !embedding_arrays.is_empty() {
+                    for (embedding_idx, embedding_array) in embedding_arrays.iter().enumerate() {
+                        let (file_path, code_snippet) = &original_chunk_batch[embedding_idx];
+                        vecs.push(vector::Vector::<512>::from(*embedding_array));
+                        metas.push(ChunkMeta { file: file_path.clone(), code: code_snippet.clone() });
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to process a batch of embeddings: {}", e);
+                // It's important to decide error strategy: continue with partial embeddings or fail hard.
+                // For now, propagating the first error encountered.
+                return Err(e.into()); 
+            }
+        }
+    }
+    
+    tracing::info!("Embeddings generation phase complete. {} embeddings collected.", vecs.len());
 
     if vecs.is_empty() {
         warn!("No embeddings were generated. Index will be empty.");
