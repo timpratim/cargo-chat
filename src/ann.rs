@@ -1,4 +1,3 @@
-// use crate::vector::{Vector, Index};
 use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use serde::ser::SerializeStruct;
 use serde::de::{ MapAccess, Error as VError};
@@ -100,6 +99,7 @@ impl<'a, M> AnnResult<'a, M> {
 }
 
 impl<const D: usize, M: Clone> Ann<D, M> {
+    #[tracing::instrument(skip(vectors, metadata))]
     pub fn build(vectors: &[Vector<D>], metadata: &[M]) -> Self {
         assert_eq!(vectors.len(), metadata.len(), "vectors and metadata must have same length");
         let index = Index::build(vectors, 1, 1, 42);
@@ -109,6 +109,7 @@ impl<const D: usize, M: Clone> Ann<D, M> {
             metadata: metadata.to_vec(),
         }
     }
+    #[tracing::instrument(skip(self, query))]
     pub fn query<'a>(&'a self, query: &Vector<D>, k: i32) -> Vec<AnnResult<'a, M>> {
         self.index
             .search(&self.vectors, query, k as usize)

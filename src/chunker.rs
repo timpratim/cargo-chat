@@ -3,6 +3,7 @@ use code_splitter::{CharCounter, Splitter};
 use log::{info, debug, warn};
 use ignore::WalkBuilder;
 
+#[tracing::instrument(skip(root))]
 pub fn chunk_repo(root: &str) -> Result<Vec<(String, String)>> {
     info!("Starting chunking for repo: {}", root);
     let lang = tree_sitter_rust::language();

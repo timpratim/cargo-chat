@@ -10,6 +10,7 @@ mod hyde; // HyDE
 mod openai; // OpenAI
 // mod vector;
 use ann::ChunkMeta;
+use tracing_subscriber::{fmt, fmt::format::FmtSpan, prelude::*, EnvFilter};
 
 #[derive(Parser)] // Command line argument parsing
 struct Cli { 
@@ -32,7 +33,11 @@ enum Cmd {
 
 #[tokio::main] // Async main function
 async fn main() -> Result<()> {
-    env_logger::init();
+    tracing_subscriber::registry()
+        .with(fmt::layer().with_span_events(FmtSpan::CLOSE))
+        .with(EnvFilter::from_default_env())
+        .init();
+
     let args = Cli::parse();
     match args.cmd {
         Cmd::Index { repo, out, model } => {
@@ -47,9 +52,14 @@ async fn main() -> Result<()> {
                 vecs.push(vector::Vector::<512>::from(v));
                 metas.push(ChunkMeta { file: file_path.clone(), code: code_snippet.clone() });
             }
+            tracing::info!("Embeddings complete. {} embeddings generated.", vecs.len());
             let a = ann::Ann::<512, ChunkMeta>::build(&vecs, &metas);
-            std::fs::write(format!("{out}/index.bin"), serde_json::to_vec(&a)?)?;
+            {
+                let _serialization_span = tracing::info_span!("ann_serialization_and_write").entered();
+                std::fs::write(format!("{out}/index.bin"), serde_json::to_vec(&a)?)?;
+            }
         }
+
         Cmd::Query { index, model, rerank, q, k, no_rerank } => {
             let embedder = embedding::Embedder::new(Some(model.clone()), ())?;
             let bytes   = std::fs::read(index.clone() + "/index.bin")?;

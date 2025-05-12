@@ -27,10 +27,12 @@ pub struct HydeResponse {
 }
 
 impl<'a, const D: usize> Hyde<'a, D> {
+    #[tracing::instrument(skip(openai, embedder, ann, reranker))]
     pub fn new(openai: OpenAIClient, embedder: Embedder, ann: &'a Ann<D, ChunkMeta>, chunk_size: usize, reranker: Option<Reranker>) -> Self {
         Self { openai, embedder, ann, chunk_size, reranker }
     }
 
+    #[tracing::instrument(skip(self, query))]
     /// Generate a hypothetical document for a given query using the OpenAI client.
     pub async fn generate_hypothetical_document(&self, query: &str) -> anyhow::Result<String> {
         let prompt = format!(
@@ -42,6 +44,7 @@ impl<'a, const D: usize> Hyde<'a, D> {
     }
 
     /// Retrieve the top-k nearest neighbors for a query string, with optional reranking.
+    #[tracing::instrument(skip(self, query))]
     pub async fn retrieve(&self, query: &str, k: usize, use_rerank: bool) -> anyhow::Result<HydeResponse> {
         let hypothetical_document = self.generate_hypothetical_document(query).await?;
         let mut results = self.similarity_search(&hypothetical_document, k).await?;
@@ -60,6 +63,7 @@ impl<'a, const D: usize> Hyde<'a, D> {
         Ok(HydeResponse { answer, code_refs: results })
     }
 
+    #[tracing::instrument(skip(self, code, system_prompt))]
     pub async fn explain_code(&self, code: &str, system_prompt: Option<&str>) -> anyhow::Result<String> {
         let prompt = format!("Explain the following Rust code in detail:\n\n{}", code);
         let system = system_prompt.unwrap_or("You are a Rust expert. Explain the code clearly and concisely.");
@@ -91,6 +95,7 @@ impl<'a, const D: usize> Hyde<'a, D> {
     }
 
     /// Retrieve the top-k nearest neighbors for a query string.
+    #[tracing::instrument(skip(self, query))]
     pub async fn similarity_search(&self, query: &str, k: usize) -> anyhow::Result<Vec<HydeResult>> {
         // Only support D=512 for embedding output
         if D != 512 {
@@ -108,6 +113,7 @@ impl<'a, const D: usize> Hyde<'a, D> {
         Ok(hyde_results)
     }
 
+    #[tracing::instrument(skip(self, query, code_refs))]
     /// Synthesize an LLM answer using the user query and top code references.
     pub async fn synthesize_answer(&self, query: &str, code_refs: &[HydeResult]) -> anyhow::Result<String> {
         let context_snippets: Vec<String> = code_refs.iter().map(|res| {

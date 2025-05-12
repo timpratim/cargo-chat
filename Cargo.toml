@@ -22,3 +22,5 @@ env_logger = "0.11.8"
 ignore = "0.4.23"
 reqwest = { version = "0.12.15", features = ["json"] }
 vector = { git = "https://github.com/timpratim/vector", branch = "serde_serialization", features = ["serde"] }
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
