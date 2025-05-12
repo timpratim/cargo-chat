@@ -6,6 +6,7 @@ use tracing_subscriber::{fmt, fmt::format::FmtSpan, prelude::*, EnvFilter};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::sync::Arc;
+use indicatif::{ProgressBar, ProgressStyle};
 
 mod chunker; mod embedding; mod ann; mod rerank; mod hyde;
 mod openai;
@@ -124,10 +125,18 @@ async fn execute_index_command(
     info!("Embedding {} chunks...", chunks.len());
     let app_batch_size = 32; 
 
+    let pb_style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")?
+        .progress_chars("#>-~");
+
+    let pb = ProgressBar::new(chunks.len() as u64);
+    pb.set_style(pb_style);
+
     for chunk_batch in chunks.chunks(app_batch_size) {
         let texts_to_embed: Vec<&str> = chunk_batch.iter().map(|(_file_path, code_snippet)| code_snippet.as_str()).collect();
         
         if texts_to_embed.is_empty() {
+            pb.inc(chunk_batch.len() as u64);
             continue;
         }
 
@@ -138,7 +147,10 @@ async fn execute_index_command(
             vecs.push(vector::Vector::<512>::from(*embedding_array));
             metas.push(ChunkMeta { file: file_path.clone(), code: code_snippet.clone() });
         }
+        pb.inc(chunk_batch.len() as u64);
     }
+    pb.finish_with_message("Embedding complete.");
+
     tracing::info!("Embeddings complete. {} embeddings generated.", vecs.len());
 
     if vecs.is_empty() {
@@ -294,10 +306,10 @@ async fn main() -> Result<()> {
                 info!("No previous history found or error loading from {:?}.", history_file_path);
             }
 
-            println!("Interactive RAG-rs session (Model: {}). Type 'help' for commands, 'exit' to quit.", actual_model_id);
+            println!("Interactive Cargo Chat session (Model: {}). Type 'help' for commands, 'exit' to quit.", actual_model_id);
 
             loop {
-                let prompt_text = format!("rag-rs ({})> ", session_state.current_index_path.as_deref().unwrap_or("no index"));
+                let prompt_text = format!("cargo-chat ({})> ", session_state.current_index_path.as_deref().unwrap_or("no index"));
                 let readline = rl.readline(&prompt_text);
                 match readline {
                     Ok(line) => {

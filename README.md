@@ -154,6 +154,28 @@ The logs include timestamps and span events, which can show the duration of spec
 - [tokio] — Async runtime
 - [rustyline] — REPL line editing
 
+## Todos
+
+- **Embedding Model Enhancement:**
+    - Explore and evaluate alternative embedding models (e.g., E5, GTE, BGE) for improved performance and domain-specific relevance.
+    - Implement configurability for the embedding model selection.
+    - Make embedding dimensions dynamic, adapting to the chosen model's output.
+- **Multi-Language Support for Code Chunking:**
+    - Integrate dynamic loading of tree-sitter grammars to support various programming languages beyond Rust.
+    - Update file filtering logic to accommodate multiple file extensions based on supported languages.
+    - Investigate and implement language-specific chunking parameters for optimal code segmentation.
+- **Configuration Management:**
+    - Introduce a configuration file (e.g., TOML, YAML) for managing settings like model paths, chunking parameters, and API keys, reducing reliance on command-line arguments and environment variables.
+- **Advanced Reranking:**
+    - Explore and integrate more sophisticated reranking models and strategies.
+- **Error Handling and Resilience:**
+    - Enhance error reporting with more context-specific details.
+    - Improve resilience to failures during long-running processes like indexing.
+- **Testing:**
+    - Expand unit and integration test coverage, particularly for embedding, chunking, and indexing logic.
+- **Documentation:**
+    - Provide more detailed documentation for developers, including architecture overview and module-specific guides.
+
 ## Contribution
 Contributions are welcome! Please open issues or pull requests. All contributions are licensed under the terms in [LICENSE.md].
 

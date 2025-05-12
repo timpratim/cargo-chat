@@ -6,6 +6,11 @@ use ignore::WalkBuilder;
 #[tracing::instrument(skip(root))]
 pub fn chunk_repo(root: &str) -> Result<Vec<(String, String)>> {
     info!("Starting chunking for repo: {}", root);
+    // TODO: Extend to support multiple languages using tree-sitter.
+    // This will involve:
+    // 1. Dynamically loading tree-sitter grammars based on file extension or configuration.
+    // 2. Modifying the file filtering logic to include supported file types.
+    // 3. Potentially adjusting chunking parameters per language.
     let lang = tree_sitter_rust::language();
     let splitter = Splitter::new(lang, CharCounter)
         .expect("Failed to load tree-sitter language")
@@ -19,6 +24,7 @@ pub fn chunk_repo(root: &str) -> Result<Vec<(String, String)>> {
         if !path.is_file() {
             continue;
         }
+        // TODO: Update this filter when multi-language support is added.
         if !path.extension().map_or(false, |e| e == "rs") {
             debug!("Skipping non-Rust file: {}", path.display());
             skipped_files += 1;

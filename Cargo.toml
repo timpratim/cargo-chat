@@ -25,6 +25,7 @@ vector = { git = "https://github.com/timpratim/vector", branch = "serde_serializ
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 rustyline = { version = "15.0.0", features = [] } # Default features, add "with-file-history" below if needed via crate feature
+indicatif = { version = "0.17.7", features = ["rayon"] }
 
 [features]
 default = []

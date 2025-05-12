@@ -7,6 +7,8 @@ pub struct Embedder {
 }
 
 // Default model ID if not specified by the user
+// TODO: Explore and evaluate other embedding models (e.g., E5, GTE, BGE) for potentially better performance or domain-specific needs.
+// Consider making the embedding model and its dimensions configurable.
 const DEFAULT_MODEL_ID: &str = "jinaai/jina-embeddings-v2-small-en";
 
 impl Embedder {
@@ -42,7 +44,10 @@ impl Embedder {
 
         for embedding_result in results {
             let vector = embedding_result.to_dense()?; // vector is Vec<f32>
-            if vector.len() != 512 { // Assuming Jina v2 models output 512. This might need to be dynamic if other models are used.
+            if vector.len() != 512 { 
+                // Assuming Jina v2 models output 512. This might need to be dynamic if other models are used.
+                // TODO: The embedding dimension is hardcoded to 512. This should be made dynamic
+                // based on the selected embedding model.
                 return Err(anyhow::anyhow!(
                     "Embedding size mismatch: expected 512 for Jina v2, got {}",
                     vector.len()
