@@ -150,7 +150,6 @@ async fn execute_index_command(
         pb.inc(chunk_batch.len() as u64);
     }
     pb.finish_with_message("Embedding complete.");
-
     tracing::info!("Embeddings complete. {} embeddings generated.", vecs.len());
 
     if vecs.is_empty() {
@@ -168,34 +167,38 @@ async fn execute_index_command(
 }
 
 fn print_query_results(hits: &hyde::HydeResponse) {
-    for (rank, res) in hits.code_refs.iter().enumerate() {
-        let file = &res.meta.file;
-        let code = &res.meta.code;
-        let snippet = code.trim();
-        let snippet_display = if snippet.len() > 200 {
-            format!("{}...", &snippet[..200])
-        } else {
-            snippet.to_string()
-        };
-        println!(
-            "Result {}:
-  File: {}
-  Chunk ID: {}
-  Distance: {:.4}
-  Code:
+    // Print the synthesized answer first, without the explicit label
+    println!("{}\n", hits.answer.trim());
+
+    // Then print the references, if any
+    if !hits.code_refs.is_empty() {
+        println!("References:");
+        for (rank, res) in hits.code_refs.iter().enumerate() {
+            let file = &res.meta.file;
+            let code = &res.meta.code;
+            let snippet = code.trim();
+            let snippet_display = if snippet.len() > 200 {
+                format!("{}...", &snippet[..200])
+            } else {
+                snippet.to_string()
+            };
+            println!(
+                "{}. File: {}
+   Chunk ID: {}
+   Distance: {:.4}
+   Code:
 {}
 ",
-            rank + 1,
-            file,
-            res.index,
-            res.distance,
-            snippet_display
-        );
+                rank + 1,
+                file,
+                res.index,
+                res.distance,
+                snippet_display
+            );
+        }
+    } else {
+        println!("No specific code references found for this answer.");
     }
-    println!("
-SYNTHESIZED ANSWER:
-{}
-", hits.answer);
 }
 
 async fn execute_query_command(
@@ -206,17 +209,19 @@ async fn execute_query_command(
     k: usize,
     use_rerank_flag: bool,
 ) -> Result<()> {
-    let openai_api_key = std::env::var("OPENAI_API_KEY").ok();
+    let openai_api_key = std::env::var("OPENAI_API_KEY")
+        .map_err(|_| anyhow::anyhow!("OPENAI_API_KEY not set. This key is required for the query command."))?;
+    
     let openai_api_url = std::env::var("OPENAI_API_URL").ok();
     
-    let openai_client = openai_api_key.as_ref().map(|key| {
-        let client = openai::OpenAIClient::new(key);
+    let openai_client = {
+        let client = openai::OpenAIClient::new(&openai_api_key);
         if let Some(url) = openai_api_url.as_ref() {
             client.with_api_url(url)
         } else {
             client
         }
-    });
+    };
 
     let reranker_instance = if use_rerank_flag {
         match rerank_model_path {
@@ -230,10 +235,7 @@ async fn execute_query_command(
         None
     };
     
-    let hyde_client = openai_client.unwrap_or_else(|| {
-        warn!("OpenAI API key not found. HyDE features requiring OpenAI will be limited.");
-        openai::OpenAIClient::new("")
-    });
+    let hyde_client = openai_client;
 
     let effective_use_rerank = use_rerank_flag && reranker_instance.is_some();
 
