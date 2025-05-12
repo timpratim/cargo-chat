@@ -20,13 +20,15 @@ tokio = { version = "1", features = ["full"] }
 log = "0.4.27" # Check if this version is current
 # env_logger = "0.11.8" # tracing-subscriber is often preferred with tracing
 ignore = "0.4.23" # Check if this version is current
-reqwest = { version = "0.12.15", features = ["json"] } # Check for newer versions, 0.12.x is recent
+reqwest = { version = "0.12.15", features = ["json", "stream"] } # Added stream feature
 vector = { git = "https://github.com/timpratim/vector", branch = "serde_serialization", features = ["serde"] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 rustyline = { version = "15.0.0", features = [] } # Default features, add "with-file-history" below if needed via crate feature
 indicatif = { version = "0.17.7", features = ["rayon"] }
 futures         = "0.3"
+futures-util    = { version = "0.3", features = ["io"] }
+async-stream    = "0.3"
 
 [features]
 default = []

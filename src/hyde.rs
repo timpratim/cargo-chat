@@ -1,11 +1,13 @@
-use crate::openai::{Message, OpenAIClient, OpenAIRequest, OpenAIResponse};
+use crate::openai::{Message, OpenAIClient, OpenAIRequest, StreamChoice};
 use crate::embedding::Embedder;
-use crate::ann::{Ann, AnnResult};
-use crate::ann::ChunkMeta;
+use crate::ann::{Ann, AnnResult, ChunkMeta};
 use anyhow::anyhow;
 use vector::Vector;
 use crate::rerank::Reranker;
 use std::sync::Arc;
+use std::pin::Pin;
+use futures_util::{Stream, StreamExt};
+use async_stream::try_stream;
 
 pub struct Hyde<'a, const D: usize> {
     pub openai: OpenAIClient,
@@ -23,7 +25,7 @@ pub struct HydeResult {
 }
 
 pub struct HydeResponse {
-    pub answer: String,
+    pub answer_stream: Pin<Box<dyn Stream<Item = Result<String, anyhow::Error>> + Send + 'static>>,
     pub code_refs: Vec<HydeResult>,
 }
 
@@ -33,7 +35,6 @@ impl<'a, const D: usize> Hyde<'a, D> {
         Self { openai, embedder, ann, chunk_size, reranker }
     }
 
-    /// Generate a hypothetical document for a given query using the OpenAI client.
     #[tracing::instrument(skip(self, query))]
     pub async fn generate_hypothetical_document(&self, query: &str) -> anyhow::Result<String> {
         let prompt = format!(
@@ -41,10 +42,19 @@ impl<'a, const D: usize> Hyde<'a, D> {
             self.chunk_size, query
         );
         let system = "You are a Rust code generator. Given a query, generate a plausible Rust code snippet or document that would answer it. The output must not exceed the specified chunk size.";
-        self.explain_code(&prompt, Some(system)).await
+        
+        let mut stream = self.explain_code_stream(&prompt, Some(system)).await?;
+        let mut full_doc = String::new();
+        while let Some(chunk_result) = stream.next().await {
+            full_doc.push_str(&chunk_result?);
+        }
+        if full_doc.is_empty() {
+            Err(anyhow!("Hypothetical document generation returned no content."))
+        } else {
+            Ok(full_doc)
+        }
     }
 
-    /// Retrieve the top-k nearest neighbors for a query string, with optional reranking.
     #[tracing::instrument(skip(self, query))]
     pub async fn retrieve(&self, query: &str, k: usize, use_rerank: bool) -> anyhow::Result<HydeResponse> {
         let hypothetical_document = self.generate_hypothetical_document(query).await?;
@@ -58,42 +68,104 @@ impl<'a, const D: usize> Hyde<'a, D> {
                 results = scored_results.into_iter().map(|(_, r)| r).collect();
             }
         }
-        let answer = self.synthesize_answer(query, &results).await?;
-        Ok(HydeResponse { answer, code_refs: results })
+        let answer_stream = self.synthesize_answer_stream(query, &results).await?;
+        Ok(HydeResponse { answer_stream, code_refs: results })
     }
 
     #[tracing::instrument(skip(self, code, system_prompt))]
-    pub async fn explain_code(&self, code: &str, system_prompt: Option<&str>) -> anyhow::Result<String> {
+    pub async fn explain_code_stream(&self, code: &str, system_prompt: Option<&str>)
+        -> anyhow::Result<Pin<Box<dyn Stream<Item = Result<String, anyhow::Error>> + Send + 'static>>>
+    {
         let prompt = format!("Explain the following Rust code in detail:\n\n{}", code);
         let system = system_prompt.unwrap_or("You are a Rust expert. Explain the code clearly and concisely.");
+        
+        let client = self.openai.client.clone();
+        let api_url = self.openai.api_url.clone();
+        let api_key = self.openai.api_key.clone();
+        let model = self.openai.model.clone();
+
         let req = OpenAIRequest {
-            model: self.openai.model.clone(),
+            model,
             messages: vec![
                 Message { role: "system".to_string(), content: system.to_string() },
                 Message { role: "user".to_string(), content: prompt },
             ],
-            max_tokens: Some(512),
+            max_tokens: Some(1024),
             temperature: Some(0.2),
+            stream: Some(true),
         };
-        let resp = self.openai.client
-            .post(&self.openai.api_url)
-            .bearer_auth(&self.openai.api_key)
-            .json(&req)
-            .send()
-            .await
-            .map_err(|e| anyhow!("HTTP error: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(anyhow!("OpenAI API error: {}", resp.text().await.unwrap_or_default()));
-        }
-        let resp: OpenAIResponse = resp.json().await?;
-        let content = resp.choices.get(0)
-            .and_then(|c| c.message.content.as_ref())
-            .cloned()
-            .unwrap_or_else(|| "No explanation returned.".to_string());
-        Ok(content)
+
+        tracing::debug!("Sending OpenAI request: {:?}", req);
+
+        let s = try_stream! {
+            let http_response = client
+                .post(&api_url)
+                .bearer_auth(&api_key)
+                .json(&req)
+                .send()
+                .await
+                .map_err(|e| anyhow!("HTTP error sending request: {e}"))?;
+
+            let status = http_response.status();
+            tracing::debug!("Received OpenAI response status: {}", status);
+
+            if !status.is_success() {
+                let err_text = http_response.text().await.unwrap_or_else(|_| "Unknown error while reading error body".to_string());
+                tracing::error!("OpenAI API error: Status {}, Body: {}", status, err_text);
+                Err(anyhow!("OpenAI API error (status {}): {}", status, err_text))?;
+            } else {
+                let mut byte_stream = http_response.bytes_stream();
+                'outer: while let Some(item) = byte_stream.next().await {
+                    let chunk_bytes = item.map_err(|e| anyhow!("Error reading stream chunk bytes: {e}"))?;
+                    let chunk_str = String::from_utf8_lossy(&chunk_bytes);
+                    tracing::trace!("Received stream chunk (raw): <<<{}>>>", chunk_str);
+
+                    for line_cow in chunk_str.lines() {
+                        let line = line_cow.trim();
+                        if line.is_empty() { continue; }
+                        tracing::trace!("Processing line from chunk: '{}'", line);
+
+                        if line.starts_with("data:") {
+                            let json_data_str = line.trim_start_matches("data:").trim();
+                            tracing::debug!("Extracted JSON data string: <<<{}>>>", json_data_str);
+
+                            if json_data_str == "[DONE]" {
+                                tracing::info!("SSE stream [DONE] received.");
+                                break 'outer;
+                            }
+                            if json_data_str.is_empty() {
+                                tracing::warn!("Empty JSON data after 'data:' prefix and trim.");
+                                continue;
+                            }
+
+                            match serde_json::from_str::<StreamChoice>(json_data_str) {
+                                Ok(stream_choice) => {
+                                    tracing::debug!("Successfully parsed StreamChoice: {:?}", stream_choice);
+                                    if let Some(choice) = stream_choice.choices.get(0) {
+                                        if let Some(delta) = &choice.delta {
+                                            if let Some(content_chunk) = &delta.content {
+                                                tracing::info!("Yielding content chunk: '{}'", content_chunk);
+                                                yield content_chunk.clone();
+                                            }
+                                        }
+                                        if let Some(reason) = &choice.finish_reason {
+                                            tracing::info!("Choice finish_reason received: '{}'.", reason);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to parse stream JSON data: '{}'. Error: {}. Skipping.", json_data_str, e);
+                                }
+                            }
+                        }
+                    }
+                }
+                tracing::info!("Finished processing OpenAI stream.");
+            }
+        };
+        Ok(Box::pin(s))
     }
 
-    /// Retrieve the top-k nearest neighbors for a query string.
     #[tracing::instrument(skip(self, query))]
     pub async fn similarity_search(&self, query: &str, k: usize) -> anyhow::Result<Vec<HydeResult>> {
         if D != 512 {
@@ -110,9 +182,10 @@ impl<'a, const D: usize> Hyde<'a, D> {
         Ok(hyde_results)
     }
 
-    /// Synthesize an LLM answer using the user query and top code references.
     #[tracing::instrument(skip(self, query, code_refs))]
-    pub async fn synthesize_answer(&self, query: &str, code_refs: &[HydeResult]) -> anyhow::Result<String> {
+    pub async fn synthesize_answer_stream(&self, query: &str, code_refs: &[HydeResult])
+        -> anyhow::Result<Pin<Box<dyn Stream<Item = Result<String, anyhow::Error>> + Send + 'static>>>
+    {
         let context_snippets: Vec<String> = code_refs.iter().map(|res| {
             format!("File: {}\nCode:\n{}\n", res.meta.file, res.meta.code)
         }).collect();
@@ -121,6 +194,6 @@ impl<'a, const D: usize> Hyde<'a, D> {
             query,
             context_snippets.join("\n---\n")
         );
-        self.explain_code(&llm_prompt, None).await
+        self.explain_code_stream(&llm_prompt, None).await
     }
 } 

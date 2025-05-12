@@ -32,7 +32,7 @@ impl OpenAIClient {
 
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct OpenAIRequest {
   pub model: String,
   pub messages: Vec<Message>,
@@ -40,25 +40,43 @@ pub struct OpenAIRequest {
   pub max_tokens: Option<u32>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub temperature: Option<f32>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub stream: Option<bool>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct Message {
     pub role: String,
     pub content: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct OpenAIResponse {
     pub choices: Vec<Choice>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct Choice {
+    #[serde(default)]
     pub message: ChoiceMessage,
+    #[serde(default)]
+    pub delta: Option<DeltaChoiceMessage>,
+    pub finish_reason: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Debug, Default)]
 pub struct ChoiceMessage {
+    pub role: Option<String>,
     pub content: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct DeltaChoiceMessage {
+    pub role: Option<String>,
+    pub content: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct StreamChoice {
+    pub choices: Vec<Choice>,
 } 
