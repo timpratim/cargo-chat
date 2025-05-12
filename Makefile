@@ -1,4 +1,4 @@
-# Makefile for rag-rs project
+# Makefile for cargo-chat project
 
 # Default target
 .PHONY: all
@@ -7,19 +7,19 @@ all: build
 # Build the project in release mode with file history support
 .PHONY: build
 build:
-	@echo "Building rag-rs in release mode..."
+	@echo "Building cargo-chat in release mode..."
 	cargo build --release --features with-file-history
 
 # Build the project in debug mode
 .PHONY: build-debug
 build-debug:
-	@echo "Building rag-rs in debug mode..."
+	@echo "Building cargo-chat in debug mode..."
 	cargo build
 
 # Run the project (interactive mode) using the release build
 .PHONY: run
 run:
-	@echo "Running rag-rs in interactive mode..."
+	@echo "Running cargo-chat in interactive mode..."
 	cargo run --release --features with-file-history -- interactive
 
 # Run the project with specific arguments using the release build
