@@ -405,7 +405,7 @@ async fn main() -> Result<()> {
             println!("Interactive Cargo Chat session (Model: {}). Type 'help' for commands, 'exit' to quit.", actual_model_id);
 
             loop {
-                let prompt_text = format!("rag-rs ({})> ", session_state.current_index_path.as_deref().unwrap_or("no index"));
+                let prompt_text = format!("cargo-chat ({})> ", session_state.current_index_path.as_deref().unwrap_or("no index"));
                 let readline = rl.readline(&prompt_text);
                 match readline {
                     Ok(line) => {

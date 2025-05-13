@@ -2,3 +2,4 @@
 /target
 index
 .DS_Store
+*index.bin
