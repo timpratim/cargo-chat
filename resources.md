@@ -6,3 +6,4 @@
 4. [tree-sitter-playground](https://tree-sitter.github.io/tree-sitter/7-playground.html)
 5. [HyDE](https://docs.haystack.deepset.ai/docs/hypothetical-document-embeddings-hyde)
 6. [Indexing](https://github.com/StarlightSearch/EmbedAnything)
+7. [Embedding leaderboard by Hugging face](https://huggingface.co/spaces/mteb/leaderboard)
