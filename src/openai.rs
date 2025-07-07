@@ -16,7 +16,7 @@ impl OpenAIClient {
             api_url: "https://api.openai.com/v1/chat/completions".to_string(),
             api_key: api_key.into(),
             client: Client::new(),
-            model: "gpt-4o-mini".to_string(),
+            model: "gpt-4o".to_string(),
         }
     }
 

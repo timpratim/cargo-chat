@@ -14,7 +14,7 @@ serde_json      = "1"
 tokenizers      = "0.19"
 code-splitter   = "0.1.5"
 tree-sitter-rust= "0.21"
-embed_anything = { version = "0.5.5",features = ["ort","metal"] }
+embed_anything = { version = "0.6",features = ["ort","metal"] }
 bincode = "2.0.1" # Consider if version 2.0.0-rc.3 is what you intend or if a stable 1.x is preferred.
 tokio = { version = "1", features = ["full"] }
 log = "0.4.27" # Check if this version is current
@@ -29,6 +29,7 @@ indicatif = { version = "0.17.7", features = ["rayon"] }
 futures         = "0.3"
 futures-util    = { version = "0.3", features = ["io"] }
 async-stream    = "0.3"
+dotenvy         = "0.15"
 
 [features]
 default = []
