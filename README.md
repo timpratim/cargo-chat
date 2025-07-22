@@ -5,7 +5,7 @@ A Rust-based Retrieval Augmented Generation (RAG) application for code repositor
 ## Features
 
 *   Local embedding model loading (currently Jina Embeddings v2 Small EN via `embed-anything`).
-*   Code chunking for Rust files.
+*   Code chunking for multiple languages including Python, JavaScript, TypeScript, PHP, Ruby, Bash, C, C++, Rust, Java, C#, Kotlin, Swift, SQL, and Go.
 *   Approximate Nearest Neighbor (ANN) index building and querying.
 *   Hypothetical Document Embeddings (HyDE) for improved retrieval.
 *   OpenAI integration for answer synthesis (requires `OPENAI_API_KEY` and optionally `OPENAI_API_URL`).
@@ -142,7 +142,7 @@ The logs include timestamps and span events, which can show the duration of spec
 - [anyhow] — Error handling
 - [walkdir] — Directory traversal
 - [code-splitter] — Code chunking
-- [tree-sitter-rust] — Rust syntax parsing
+- Tree-sitter parsers for Python, JavaScript, TypeScript, PHP, Ruby, Bash, C, C++, Rust, Java, C#, Kotlin, Swift, SQL, and Go
 - [embed_anything] — Embedding models
 - [bincode] — Serialization
 - [tokio] — Async runtime
@@ -154,10 +154,8 @@ The logs include timestamps and span events, which can show the duration of spec
     - Explore and evaluate alternative embedding models (e.g., E5, GTE, BGE) for improved performance and domain-specific relevance.
     - Implement configurability for the embedding model selection.
     - Make embedding dimensions dynamic, adapting to the chosen model's output.
-- **Multi-Language Support for Code Chunking:**
-    - Integrate dynamic loading of tree-sitter grammars to support various programming languages beyond Rust.
-    - Update file filtering logic to accommodate multiple file extensions based on supported languages.
-    - Investigate and implement language-specific chunking parameters for optimal code segmentation.
+- **Multi-Language Support for Code Chunking (completed):**
+    - Tree-sitter grammars for Python, JavaScript, TypeScript, PHP, Ruby, Bash, C, C++, Rust, Java, C#, Kotlin, Swift, SQL and Go are included.
 - **Configuration Management:**
     - Introduce a configuration file (e.g., TOML, YAML) for managing settings like model paths, chunking parameters, and API keys, reducing reliance on command-line arguments and environment variables.
 - **Advanced Reranking:**
