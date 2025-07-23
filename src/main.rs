@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use anyhow::Result;
 use log::{info, error, warn};
 use serde_json;
@@ -10,10 +10,27 @@ use indicatif::{ProgressBar, ProgressStyle};
 use futures::future::join_all;
 use futures_util::StreamExt;
 use std::io::{stdout, Write};
+use std::str::FromStr;
 
 mod chunker; mod embedding; mod ann; mod rerank; mod hyde;
 mod openai;
 use ann::ChunkMeta;
+use embedding::EmbeddingModel;
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum EmbeddingModelType {
+    Jina,
+    Qwen3,
+}
+
+impl EmbeddingModelType {
+    pub fn to_embedding_model(&self) -> EmbeddingModel {
+        match self {
+            EmbeddingModelType::Jina => EmbeddingModel::default_jina(),
+            EmbeddingModelType::Qwen3 => EmbeddingModel::default_qwen3(),
+        }
+    }
+}
 
 #[derive(Parser)]
 struct Cli {
@@ -27,14 +44,22 @@ enum Cmd {
     Index {
         repo: String,
         out: String,
+        /// Custom model ID (overrides --model-type)
         #[arg(long)]
         model_id: Option<String>,
+        /// Predefined embedding model type
+        #[arg(long, value_enum, default_value_t = EmbeddingModelType::Jina)]
+        model_type: EmbeddingModelType,
     },
     /// Query a previously built index using a question to find relevant code and synthesize an answer.
     Query {
         index_dir: String,
+        /// Custom model ID (overrides --model-type)
         #[arg(long)]
         model_id: Option<String>,
+        /// Predefined embedding model type
+        #[arg(long, value_enum, default_value_t = EmbeddingModelType::Jina)]
+        model_type: EmbeddingModelType,
         q: String,
         k: usize,
         #[arg(long)]
@@ -44,8 +69,12 @@ enum Cmd {
     },
     /// Start an interactive REPL session for efficient iterative indexing and querying.
     Interactive { 
+        /// Custom model ID (overrides --model-type)
         #[arg(long)]
         model_id: Option<String>,
+        /// Predefined embedding model type
+        #[arg(long, value_enum, default_value_t = EmbeddingModelType::Jina)]
+        model_type: EmbeddingModelType,
     },
 }
 
@@ -78,6 +107,12 @@ struct ReplIndexArgs {
     repo: String,
     #[arg(long)]
     out: String,
+    /// Custom model ID (overrides --model-type)
+    #[arg(long)]
+    model_id: Option<String>,
+    /// Predefined embedding model type
+    #[arg(long, value_enum, default_value_t = EmbeddingModelType::Qwen3)]
+    model_type: EmbeddingModelType,
 }
 
 #[derive(Parser, Debug)]
@@ -98,19 +133,30 @@ struct ReplQueryArgs {
 
 struct SessionState {
     embedder: Arc<embedding::Embedder>,
-    ann_index: Option<ann::Ann<512, ChunkMeta>>,
-    model_id: String,
+    ann_index: Option<ann::DynamicAnn<ChunkMeta>>,
+    model: EmbeddingModel,
     current_index_path: Option<String>,
 }
 
 impl SessionState {
-    fn new( model_id: String, embedder: Arc<embedding::Embedder>) -> Self {
+    fn new(model: EmbeddingModel, embedder: Arc<embedding::Embedder>) -> Self {
         Self {
             embedder,
             ann_index: None,
-            model_id,
+            model,
             current_index_path: None,
         }
+    }
+}
+
+/// Resolve embedding model from CLI arguments
+fn resolve_embedding_model(model_id: Option<String>, model_type: EmbeddingModelType) -> Result<EmbeddingModel> {
+    if let Some(id) = model_id {
+        // Custom model ID takes precedence
+        EmbeddingModel::from_str(&id)
+    } else {
+        // Use predefined model type
+        Ok(model_type.to_embedding_model())
     }
 }
 
@@ -176,9 +222,9 @@ async fn execute_index_command(
         match result_item {
             Ok((original_chunk_batch, embedding_arrays)) => {
                 if !embedding_arrays.is_empty() {
-                    for (embedding_idx, embedding_array) in embedding_arrays.iter().enumerate() {
+                    for (embedding_idx, embedding_vector) in embedding_arrays.iter().enumerate() {
                         let (file_path, code_snippet) = &original_chunk_batch[embedding_idx];
-                        vecs.push(vector::Vector::<512>::from(*embedding_array));
+                        vecs.push(embedding_vector.clone());
                         metas.push(ChunkMeta { file: file_path.clone(), code: code_snippet.clone() });
                     }
                 }
@@ -198,7 +244,7 @@ async fn execute_index_command(
         warn!("No embeddings were generated. Index will be empty.");
     }
     
-    let ann_instance = ann::Ann::<512, ChunkMeta>::build(&vecs, &metas);
+    let ann_instance = ann::DynamicAnn::<ChunkMeta>::build(vecs, metas)?;
     
     std::fs::create_dir_all(output_dir)?;
     let index_file_path = format!("{}/index.bin", output_dir);
@@ -270,7 +316,7 @@ async fn print_query_results(mut hits: hyde::HydeResponse) -> Result<()> {
 
 async fn execute_query_command(
     embedder: Arc<embedding::Embedder>,
-    ann_index: &ann::Ann<512, ChunkMeta>,
+    ann_index: &ann::DynamicAnn<ChunkMeta>,
     rerank_model_path: Option<&str>,
     query_string: &str,
     k: usize,
@@ -307,7 +353,7 @@ async fn execute_query_command(
 
     let effective_use_rerank = use_rerank_flag && reranker_instance.is_some();
 
-    let hyde = hyde::Hyde::<512>::new(hyde_client, embedder, ann_index, 1000, reranker_instance);
+    let hyde = hyde::Hyde::new(hyde_client, embedder, ann_index, 1000, reranker_instance);
     
     // Start progress bar
     let pb = ProgressBar::new_spinner();
@@ -353,28 +399,38 @@ async fn main() -> Result<()> {
 
     let args = Cli::parse();
     match args.cmd {
-        Cmd::Index { repo, out,  model_id } => {
-            info!("Loading embedder (model_id: {:?})", model_id.as_deref().unwrap_or("default"));
-            let embedder = embedding::Embedder::new( model_id)?;
+        Cmd::Index { repo, out, model_id, model_type } => {
+            let embedding_model = resolve_embedding_model(model_id, model_type)?;
+            info!("Loading embedder with model: {}", embedding_model);
+            let embedder = embedding::Embedder::new(embedding_model)?;
             execute_index_command(&embedder, &repo, &out).await?;
         }
-        Cmd::Query { index_dir,  model_id, q, k, rerank_model, use_rerank } => {
-            info!("Loading embedder (model_id: {:?})", model_id.as_deref().unwrap_or("default"));
-            let embedder = Arc::new(embedding::Embedder::new( model_id)?); 
+        Cmd::Query { index_dir, model_id, model_type, q, k, rerank_model, use_rerank } => {
+            let embedding_model = resolve_embedding_model(model_id, model_type)?;
+            info!("Loading embedder with model: {}", embedding_model);
+            let embedder = Arc::new(embedding::Embedder::new(embedding_model)?); 
             
             let index_file_path = format!("{}/index.bin", index_dir);
             info!("Loading ANN index from: {}", index_file_path);
             let bytes = std::fs::read(&index_file_path)?;
-            let ann_data: ann::Ann<512, ChunkMeta> = serde_json::from_slice(&bytes)?;
+            
+            // Try to load as 512D first, then 1024D
+            let ann_data = if let Ok(ann_512) = serde_json::from_slice::<ann::Ann<512, ChunkMeta>>(&bytes) {
+                ann::DynamicAnn::Dim512(ann_512)
+            } else if let Ok(ann_1024) = serde_json::from_slice::<ann::Ann<1024, ChunkMeta>>(&bytes) {
+                ann::DynamicAnn::Dim1024(ann_1024)
+            } else {
+                return Err(anyhow::anyhow!("Failed to deserialize ANN index. Unsupported dimension."));
+            };
             
             execute_query_command(embedder, &ann_data, rerank_model.as_deref(), &q, k, use_rerank).await?;
         }
-        Cmd::Interactive { model_id } => {
-            let actual_model_id = model_id.clone().unwrap_or_else(|| "jinaai/jina-embeddings-v2-small-en".to_string());
-            info!("Starting interactive session. Loading embedder (model_id: {})", actual_model_id);
-            let embedder_instance = embedding::Embedder::new( model_id)?;
+        Cmd::Interactive { model_id, model_type } => {
+            let embedding_model = resolve_embedding_model(model_id, model_type)?;
+            info!("Starting interactive session. Loading embedder with model: {}", embedding_model);
+            let embedder_instance = embedding::Embedder::new(embedding_model.clone())?;
             let shared_embedder = Arc::new(embedder_instance);
-            let mut session_state = SessionState::new( actual_model_id.clone(), shared_embedder.clone());
+            let mut session_state = SessionState::new(embedding_model, shared_embedder.clone());
             
             let mut rl = DefaultEditor::new()?;
 
@@ -404,7 +460,7 @@ async fn main() -> Result<()> {
                 info!("No previous history found or error loading from {:?}.", history_file_path);
             }
 
-            println!("Interactive Cargo Chat session (Model: {}). Type 'help' for commands, 'exit' to quit.", actual_model_id);
+            println!("Interactive Cargo Chat session (Model: {}). Type 'help' for commands, 'exit' to quit.", session_state.model);
 
             loop {
                 let prompt_text = format!("cargo-chat ({})> ", session_state.current_index_path.as_deref().unwrap_or("no index"));
@@ -422,18 +478,26 @@ async fn main() -> Result<()> {
                                 match repl_cli.cmd {
                                     ReplSubCmd::Index(args) => {
                                         info!("Executing REPL Index: repo={}, out={}", args.repo, args.out);
-                                        match execute_index_command(&session_state.embedder, &args.repo, &args.out).await {
+                                        let embedding_model = resolve_embedding_model(args.model_id.clone(), args.model_type.clone())?;
+                                        let embedder = embedding::Embedder::new(embedding_model)?;
+                                        match execute_index_command(&embedder, &args.repo, &args.out).await {
                                             Ok(()) => {
                                                 info!("Index command completed successfully. Attempting to load the new index.");
                                                 let index_file_path = format!("{}/index.bin", args.out);
                                                 match std::fs::read(&index_file_path) {
-                                                    Ok(bytes) => match serde_json::from_slice(&bytes) {
-                                                        Ok(ann_data) => {
-                                                            session_state.ann_index = Some(ann_data);
-                                                            session_state.current_index_path = Some(args.out.clone());
-                                                            info!("Successfully loaded newly created index from {}", args.out);
-                                                        }
-                                                        Err(e) => error!("Failed to deserialize newly created index {}: {}", index_file_path, e),
+                                                    Ok(bytes) => {
+                                                        // Try to load as 512D first, then 1024D
+                                                        let ann_data = if let Ok(ann_512) = serde_json::from_slice::<ann::Ann<512, ChunkMeta>>(&bytes) {
+                                                            ann::DynamicAnn::Dim512(ann_512)
+                                                        } else if let Ok(ann_1024) = serde_json::from_slice::<ann::Ann<1024, ChunkMeta>>(&bytes) {
+                                                            ann::DynamicAnn::Dim1024(ann_1024)
+                                                        } else {
+                                                            error!("Failed to deserialize newly created index. Unsupported dimension.");
+                                                            continue;
+                                                        };
+                                                        session_state.ann_index = Some(ann_data);
+                                                        session_state.current_index_path = Some(args.out.clone());
+                                                        info!("Successfully loaded newly created index from {}", args.out);
                                                     },
                                                     Err(e) => error!("Failed to read newly created index file {}: {}", index_file_path, e),
                                                 }
@@ -445,13 +509,19 @@ async fn main() -> Result<()> {
                                         let index_file_path = format!("{}/index.bin", args.index_dir);
                                         info!("REPL: Loading ANN index from: {}", index_file_path);
                                         match std::fs::read(&index_file_path) {
-                                            Ok(bytes) => match serde_json::from_slice(&bytes) {
-                                                Ok(ann_data) => {
-                                                    session_state.ann_index = Some(ann_data);
-                                                    session_state.current_index_path = Some(args.index_dir.clone());
-                                                    info!("Index loaded successfully from {}", args.index_dir);
-                                                }
-                                                Err(e) => error!("Failed to deserialize index: {}", e),
+                                            Ok(bytes) => {
+                                                // Try to load as 512D first, then 1024D
+                                                let ann_data = if let Ok(ann_512) = serde_json::from_slice::<ann::Ann<512, ChunkMeta>>(&bytes) {
+                                                    ann::DynamicAnn::Dim512(ann_512)
+                                                } else if let Ok(ann_1024) = serde_json::from_slice::<ann::Ann<1024, ChunkMeta>>(&bytes) {
+                                                    ann::DynamicAnn::Dim1024(ann_1024)
+                                                } else {
+                                                    error!("Failed to deserialize index. Unsupported dimension.");
+                                                    continue;
+                                                };
+                                                session_state.ann_index = Some(ann_data);
+                                                session_state.current_index_path = Some(args.index_dir.clone());
+                                                info!("Index loaded successfully from {}", args.index_dir);
                                             },
                                             Err(e) => error!("Failed to read index file {}: {}", index_file_path, e),
                                         }
@@ -476,7 +546,7 @@ async fn main() -> Result<()> {
                                     }
                                     ReplSubCmd::Status => {
                                         println!("Session Status:");
-                                        println!("  Model ID: {}", session_state.model_id);
+                                        println!("  Model: {}", session_state.model);
                                         println!("  Embedder Loaded: Yes");
                                         if let Some(ref p) = session_state.current_index_path {
                                             println!("  Current Index: {} (Loaded)", p);

@@ -1,33 +1,105 @@
 use anyhow::Result;
 use embed_anything::embeddings::embed::{Embedder as EAEmbedder, TextEmbedder};
 use embed_anything::embeddings::local::jina::JinaEmbedder;
+use embed_anything::embeddings::local::qwen3::Qwen3Embedder;
+use embed_anything::Dtype;
+use std::str::FromStr;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EmbeddingModel {
+    Jina(String),
+    Qwen3(String),
+}
+
+impl EmbeddingModel {
+    pub fn model_id(&self) -> &str {
+        match self {
+            EmbeddingModel::Jina(id) => id,
+            EmbeddingModel::Qwen3(id) => id,
+        }
+    }
+
+    pub fn embedding_dimension(&self) -> usize {
+        match self {
+            EmbeddingModel::Jina(_) => 512,
+            EmbeddingModel::Qwen3(_) => 1024,
+        }
+    }
+
+    pub fn default_jina() -> Self {
+        Self::Jina("jinaai/jina-embeddings-v2-small-en".to_string())
+    }
+
+    pub fn default_qwen3() -> Self {
+        Self::Qwen3("Qwen/Qwen3-Embedding-0.6B".to_string())
+    }
+}
+
+impl FromStr for EmbeddingModel {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.to_lowercase();
+        if s.contains("qwen3") || s.contains("qwen") {
+            Ok(EmbeddingModel::Qwen3(s))
+        } else if s.contains("jina") {
+            Ok(EmbeddingModel::Jina(s))
+        } else {
+            // Default to Jina for unknown models
+            Ok(EmbeddingModel::Jina(s))
+        }
+    }
+}
+
+impl std::fmt::Display for EmbeddingModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EmbeddingModel::Jina(id) => write!(f, "Jina({})", id),
+            EmbeddingModel::Qwen3(id) => write!(f, "Qwen3({})", id),
+        }
+    }
+}
 
 pub struct Embedder {
     inner: EAEmbedder,
+    model: EmbeddingModel,
 }
 
-// Default model ID if not specified by the user
-// TODO: Explore and evaluate other embedding models (e.g., E5, GTE, BGE) for potentially better performance or domain-specific needs.
-// Consider making the embedding model and its dimensions configurable.
-const DEFAULT_MODEL_ID: &str = "jinaai/jina-embeddings-v2-small-en";
-
 impl Embedder {
-    #[tracing::instrument(fields(model_id = model_id.as_deref().unwrap_or(DEFAULT_MODEL_ID)))]
-    pub fn new(
-        model_id: Option<String>,
-    ) -> Result<Self> {
-        let model_to_load = model_id.as_deref().unwrap_or(DEFAULT_MODEL_ID);
+    #[tracing::instrument(fields(model = %model))]
+    pub fn new(model: EmbeddingModel) -> Result<Self> {
+        let (inner, _) = match &model {
+            EmbeddingModel::Qwen3(model_id) => {
+                let qwen3_embedder = Qwen3Embedder::new(
+                    model_id,
+                    None,
+                    None,
+                    Some(Dtype::F32),
+                ).map_err(|e| 
+                    anyhow::anyhow!("Failed to load Qwen3Embedder model '{}': {}. Ensure the model exists and network is available if downloading.", model_id, e)
+                )?;
+                let inner = EAEmbedder::Text(TextEmbedder::Qwen3(Box::new(qwen3_embedder)));
+                (inner, 1024)
+            }
+            EmbeddingModel::Jina(model_id) => {
+                let jina_embedder = JinaEmbedder::new(model_id, None, None).map_err(|e| 
+                    anyhow::anyhow!("Failed to load JinaEmbedder model '{}': {}. Ensure the model exists and network is available if downloading.", model_id, e)
+                )?;
+                let inner = EAEmbedder::Text(TextEmbedder::Jina(Box::new(jina_embedder)));
+                (inner, 512)
+            }
+        };
         
-     
-        let jina_embedder = JinaEmbedder::new(model_to_load, None, None).map_err(|e| 
-            anyhow::anyhow!("Failed to load JinaEmbedder model '{}': {}. Ensure the model exists and network is available if downloading.", model_to_load, e)
-        )?;
-        let inner = EAEmbedder::Text(TextEmbedder::Jina(Box::new(jina_embedder)));
-        Ok(Self { inner })
+        Ok(Self { inner, model })
+    }
+
+    /// Get the embedding dimension for this model
+    pub fn embedding_dimension(&self) -> usize {
+        self.model.embedding_dimension()
     }
 
     #[tracing::instrument(skip(self, text))]
-    pub async fn embed(&self, text: &str) -> Result<[f32; 512]> {
+    pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         // This is less efficient, prefer embed_batch for multiple texts
         let mut results = self.embed_batch(&[text], Some(1)).await?;
         if results.is_empty() {
@@ -38,25 +110,21 @@ impl Embedder {
     }
 
     #[tracing::instrument(skip(self, texts))]
-    pub async fn embed_batch(&self, texts: &[&str], batch_size: Option<usize>) -> Result<Vec<[f32; 512]>> {
+    pub async fn embed_batch(&self, texts: &[&str], batch_size: Option<usize>) -> Result<Vec<Vec<f32>>> {
         let results = self.inner.embed(texts, batch_size, None).await?;
-        let mut embeddings_array_vec = Vec::with_capacity(results.len());
+        let mut embeddings_vec = Vec::with_capacity(results.len());
 
         for embedding_result in results {
             let vector = embedding_result.to_dense()?; // vector is Vec<f32>
-            if vector.len() != 512 { 
-                // Assuming Jina v2 models output 512. This might need to be dynamic if other models are used.
-                // TODO: The embedding dimension is hardcoded to 512. This should be made dynamic
-                // based on the selected embedding model.
+            if vector.len() != self.embedding_dimension() { 
                 return Err(anyhow::anyhow!(
-                    "Embedding size mismatch: expected 512 for Jina v2, got {}",
+                    "Embedding size mismatch: expected {} for model, got {}",
+                    self.embedding_dimension(),
                     vector.len()
                 ));
             }
-            let mut arr = [0.0_f32; 512];
-            arr.copy_from_slice(&vector);
-            embeddings_array_vec.push(arr);
+            embeddings_vec.push(vector);
         }
-        Ok(embeddings_array_vec)
+        Ok(embeddings_vec)
     }
 }

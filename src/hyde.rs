@@ -1,18 +1,17 @@
 use crate::openai::{Message, OpenAIClient, OpenAIRequest, StreamChoice};
 use crate::embedding::Embedder;
-use crate::ann::{Ann, AnnResult, ChunkMeta};
+use crate::ann::{ChunkMeta, DynamicAnn};
 use anyhow::anyhow;
-use vector::Vector;
 use crate::rerank::Reranker;
 use std::sync::Arc;
 use std::pin::Pin;
 use futures_util::{Stream, StreamExt};
 use async_stream::try_stream;
 
-pub struct Hyde<'a, const D: usize> {
+pub struct Hyde<'a> {
     pub openai: OpenAIClient,
     pub embedder: Arc<Embedder>,
-    pub ann: &'a Ann<D, ChunkMeta>,
+    pub ann: &'a DynamicAnn<ChunkMeta>,
     pub chunk_size: usize,
     pub reranker: Option<Reranker>,
 }
@@ -29,9 +28,9 @@ pub struct HydeResponse {
     pub code_refs: Vec<HydeResult>,
 }
 
-impl<'a, const D: usize> Hyde<'a, D> {
+impl<'a> Hyde<'a> {
     #[tracing::instrument(skip(openai, embedder, ann, reranker))]
-    pub fn new(openai: OpenAIClient, embedder: Arc<Embedder>, ann: &'a Ann<D, ChunkMeta>, chunk_size: usize, reranker: Option<Reranker>) -> Self {
+    pub fn new(openai: OpenAIClient, embedder: Arc<Embedder>, ann: &'a DynamicAnn<ChunkMeta>, chunk_size: usize, reranker: Option<Reranker>) -> Self {
         Self { openai, embedder, ann, chunk_size, reranker }
     }
 
@@ -66,7 +65,13 @@ impl<'a, const D: usize> Hyde<'a, D> {
                 let mut scored_results: Vec<(f32, HydeResult)> = results.into_iter().zip(scores.iter().map(|r| r.documents[0].relevance_score)).map(|(r, s)| (s, r)).collect();
                 scored_results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
                 results = scored_results.into_iter().map(|(_, r)| r).collect();
+            } else {
+                // When reranking is requested but no reranker is available, sort by distance
+                results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
             }
+        } else {
+            // When not using reranking, sort by distance to ensure proper ordering
+            results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
         }
         let answer_stream = self.synthesize_answer_stream(query, &results).await?;
         Ok(HydeResponse { answer_stream, code_refs: results })
@@ -76,8 +81,8 @@ impl<'a, const D: usize> Hyde<'a, D> {
     pub async fn explain_code_stream(&self, code: &str, system_prompt: Option<&str>)
         -> anyhow::Result<Pin<Box<dyn Stream<Item = Result<String, anyhow::Error>> + Send + 'static>>>
     {
-        let prompt = format!("Explain the following Rust code in detail:\n\n{}", code);
-        let system = system_prompt.unwrap_or("You are a Rust expert. Explain the code clearly and concisely.");
+        let prompt = format!("Answer the following question about this Rust code:\n\n{}", code);
+        let system = system_prompt.unwrap_or("You are a helpful Rust expert. Provide clear, concise answers. Focus on answering the question directly without unnecessary code analysis unless specifically requested.");
         
         let client = self.openai.client.clone();
         let api_url = self.openai.api_url.clone();
@@ -168,12 +173,8 @@ impl<'a, const D: usize> Hyde<'a, D> {
 
     #[tracing::instrument(skip(self, query))]
     pub async fn similarity_search(&self, query: &str, k: usize) -> anyhow::Result<Vec<HydeResult>> {
-        if D != 512 {
-            return Err(anyhow::anyhow!("retrieve only supports D=512 (got D={})", D));
-        }
         let embedding = self.embedder.embed(query).await?;
-        let embedding_ref: &Vector<D> = unsafe { &*(&embedding as *const [f32; 512] as *const [f32; D]) };
-        let results = self.ann.query(embedding_ref, k as i32);
+        let results = self.ann.query(&embedding, k as i32)?;
         let hyde_results = results
             .into_iter()
             .enumerate()
@@ -190,7 +191,7 @@ impl<'a, const D: usize> Hyde<'a, D> {
             format!("File: {}\nCode:\n{}\n", res.meta.file, res.meta.code)
         }).collect();
         let llm_prompt = format!(
-            "Given the following user query:\n{}\n\nand these relevant code snippets:\n{}\n\nProvide a detailed answer, referencing the code where appropriate.",
+            "User question: {}\n\nRelevant code snippets:\n{}\n\nProvide a concise, direct answer to the user's question. Only reference specific code details if they directly support your answer.",
             query,
             context_snippets.join("\n---\n")
         );

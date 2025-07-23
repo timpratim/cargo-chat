@@ -4,19 +4,19 @@ A Rust-based Retrieval Augmented Generation (RAG) application for code repositor
 
 ## Features
 
-*   Local embedding model loading (currently Jina Embeddings v2 Small EN via `embed-anything`).
-*   Code chunking for Rust files.
-*   Approximate Nearest Neighbor (ANN) index building and querying.
-*   Hypothetical Document Embeddings (HyDE) for improved retrieval.
-*   OpenAI integration for answer synthesis (requires `OPENAI_API_KEY` and optionally `OPENAI_API_URL`).
-*   Optional reranking of search results.
-*   Interactive REPL mode for efficient iterative operations.
-*   Detailed logging and tracing capabilities.
+*   **Flexible Embedding Models**: Support for multiple embedding model types including Jina and Qwen3 models with automatic dimension detection (512D for Jina, 1024D for Qwen3).
+*   **Code chunking for Rust files**.
+*   **Approximate Nearest Neighbor (ANN) index building and querying**.
+*   **Hypothetical Document Embeddings (HyDE) for improved retrieval**.
+*   **OpenAI integration for answer synthesis** (requires `OPENAI_API_KEY` and optionally `OPENAI_API_URL`).
+*   **Optional reranking of search results**.
+*   **Interactive REPL mode for efficient iterative operations**.
+*   **Detailed logging and tracing capabilities**.
 
 ## Prerequisites
 
 *   Rust (latest stable recommended).
-*   An embedding model compatible with `embed-anything` (the default is `jinaai/jina-embeddings-v2-small-en`, which will be downloaded on first use).
+*   An embedding model compatible with `embed-anything` (defaults to Jina models, which will be downloaded on first use).
 *   Optionally, an OpenAI API key set as an environment variable (`OPENAI_API_KEY`) for answer synthesis and advanced HyDE features.
 *   ONNX Runtime and its dependencies if you plan to use the reranking feature. Installation instructions can be found on the [ONNX Runtime website](https://onnxruntime.ai/docs/install/).
 
@@ -49,15 +49,22 @@ cargo build --release --features with-file-history
 The interactive mode loads the embedding model once at the start, making subsequent indexing and querying much faster.
 
 ```bash
-# Start the interactive session, specifying the directory containing your embedding model
-# (If the model doesn't exist locally, embed-anything will attempt to download it here)
-RUST_LOG=info ./target/release/cargo_chat interactive --model_dir ./embedding_model_cache
+# Start the interactive session with default Jina model
+RUST_LOG=info ./target/release/cargo_chat interactive
+
+# Start with a specific model type
+RUST_LOG=info ./target/release/cargo_chat interactive --model-type qwen3
+
+# Start with a custom model ID
+RUST_LOG=info ./target/release/cargo_chat interactive --model-id "custom/jina-model"
 ```
 
 Once inside the REPL (`cargo-chat (...)> ` prompt), you can use the following commands:
 
-*   `index --repo <path_to_your_code_repo> --out <output_index_dir>`
+*   `index --repo <path_to_your_code_repo> --out <output_index_dir> [--model-type <jina|qwen3>] [--model-id <custom_model_id>]`
     *   Example: `index --repo ../my_project --out ./my_project_index`
+    *   Example with Qwen3: `index --repo ../my_project --out ./my_project_index --model-type qwen3`
+    *   Example with custom model: `index --repo ../my_project --out ./my_project_index --model-id "custom/jina-model"`
 *   `load_index <path_to_existing_index_dir>`
     *   Example: `load_index ./my_project_index`
 *   `query "<your question>" [-k <num_results>] [--use-rerank] [--rerank-model <path_to_rerank_model>]`
@@ -74,30 +81,51 @@ Once inside the REPL (`cargo-chat (...)> ` prompt), you can use the following co
 This command chunks the specified repository, generates embeddings for the code chunks, and builds an ANN index.
 
 ```bash
-# Example: Index the current directory, save the index to ./output_index
+# Example: Index the current directory with default Jina model
 RUST_LOG=info ./target/release/cargo_chat index --repo . --out ./output_index
+
+# Example: Index with Qwen3 model
+RUST_LOG=info ./target/release/cargo_chat index --repo . --out ./output_index --model-type qwen3
+
+# Example: Index with custom model ID
+RUST_LOG=info ./target/release/cargo_chat index --repo . --out ./output_index --model-id "custom/jina-model"
 ```
 
 *   `--repo <path>`: Path to the code repository to index.
 *   `--out <path>`: Path to the directory where the generated index (`index.bin`) will be saved.
-*   `--model_dir <path>`: Path to the directory containing the embedding model. If the model is not present, `embed-anything` might attempt to download it here.
+*   `--model-type <jina|qwen3>`: Predefined embedding model type (defaults to `jina`).
+*   `--model-id <id>`: Custom model ID (overrides `--model-type` if specified).
 
 #### 2. Query an Index
 
 This command queries a previously built ANN index to find relevant code chunks and synthesize an answer.
 
 ```bash
-# Example: Query an index located in ./output_index,
-# and optionally specify a reranker model.
+# Example: Query an index with default Jina model
 RUST_LOG=info ./target/release/cargo_chat query \
     --index_dir ./output_index \
     --q "How do I implement batching for embeddings?" \
-    --k 3 \\
-    # --use-rerank \\
-    # --rerank_model ./path_to_reranker_model
+    --k 3
+
+# Example: Query with Qwen3 model
+RUST_LOG=info ./target/release/cargo_chat query \
+    --index_dir ./output_index \
+    --model-type qwen3 \
+    --q "How do I implement batching for embeddings?" \
+    --k 3
+
+# Example: Query with reranking enabled
+RUST_LOG=info ./target/release/cargo_chat query \
+    --index_dir ./output_index \
+    --q "How do I implement batching for embeddings?" \
+    --k 3 \
+    --use-rerank \
+    --rerank_model ./path_to_reranker_model
 ```
 
 *   `--index_dir <path>`: Path to the directory containing the `index.bin` file.
+*   `--model-type <jina|qwen3>`: Predefined embedding model type (defaults to `jina`).
+*   `--model-id <id>`: Custom model ID (overrides `--model-type` if specified).
 *   `--q "<query_string>"`: The question you want to ask.
 *   `--k <num>`: The number of top results to retrieve.
 *   `--rerank_model <path>`: (Optional) Path to a reranking model directory.
@@ -134,6 +162,34 @@ The logs include timestamps and span events, which can show the duration of spec
 *   `OPENAI_API_URL`: (Optional) Custom base URL for the OpenAI API (e.g., for local LLM proxies).
 *   `RUST_LOG`: Controls logging verbosity (see Tracing section).
 
+## Embedding Models
+
+Cargo-chat supports multiple embedding model types with automatic dimension detection:
+
+### Supported Model Types
+
+- **Jina Models** (512-dimensional embeddings)
+  - Default: `jinaai/jina-embeddings-v2-small-en`
+  - Compatible with any Jina embedding model via `embed-anything`
+  
+- **Qwen3 Models** (1024-dimensional embeddings)
+  - Default: `Qwen/Qwen3-Embedding-0.6B`
+  - Compatible with Qwen3 embedding models
+
+### Model Selection
+
+You can specify models in several ways:
+
+1. **Predefined Types**: Use `--model-type jina` or `--model-type qwen3`
+2. **Custom Model IDs**: Use `--model-id "your/custom/model"` (auto-detects type based on model name)
+3. **Default**: If no model is specified, defaults to Jina model
+
+### Model Compatibility
+
+- Models are automatically downloaded on first use via `embed-anything`
+- The application automatically detects embedding dimensions (512D for Jina, 1024D for Qwen3)
+- Index files are compatible across different model types as long as dimensions match
+
 ## Workspace Structure
 - `src/` — Main application logic (chunker, embedding, ann, rerank, main.rs)
 
@@ -151,9 +207,9 @@ The logs include timestamps and span events, which can show the duration of spec
 ## Todos
 
 - **Embedding Model Enhancement:**
-    - Explore and evaluate alternative embedding models (e.g., E5, GTE, BGE) for improved performance and domain-specific relevance.
-    - Implement configurability for the embedding model selection.
-    - Make embedding dimensions dynamic, adapting to the chosen model's output.
+    - ✅ **Completed**: Implemented flexible embedding model selection with enum-based API
+    - ✅ **Completed**: Added support for Jina and Qwen3 models with automatic dimension detection
+    - Explore and evaluate additional embedding models (e.g., E5, GTE, BGE) for improved performance and domain-specific relevance
 - **Multi-Language Support for Code Chunking:**
     - Integrate dynamic loading of tree-sitter grammars to support various programming languages beyond Rust.
     - Update file filtering logic to accommodate multiple file extensions based on supported languages.

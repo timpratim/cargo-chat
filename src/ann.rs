@@ -10,6 +10,102 @@ pub struct Ann<const D: usize, M> {
     pub metadata: Vec<M>,
 }
 
+// Dynamic ANN wrapper that can handle different dimensions
+pub enum DynamicAnn<M> {
+    Dim512(Ann<512, M>),
+    Dim1024(Ann<1024, M>),
+}
+
+impl<M: Clone> DynamicAnn<M> {
+    pub fn build(vectors: Vec<Vec<f32>>, metadata: Vec<M>) -> Result<Self, anyhow::Error> {
+        if vectors.is_empty() {
+            return Err(anyhow::anyhow!("Cannot build ANN with empty vectors"));
+        }
+        
+        let dimension = vectors[0].len();
+        // Validate dimension matches expected values
+        if dimension != 512 && dimension != 1024 {
+            return Err(anyhow::anyhow!("Unsupported embedding dimension: {}", dimension));
+        }
+        
+        let ann = match dimension {
+            512 => {
+                let fixed_vectors: Vec<Vector<512>> = vectors
+                    .into_iter()
+                    .map(|v| {
+                        let arr: [f32; 512] = v.try_into()
+                            .map_err(|_| anyhow::anyhow!("Failed to convert vector to [f32; 512]"))?;
+                        Ok(arr)
+                    })
+                    .collect::<Result<Vec<_>, anyhow::Error>>()?;
+                DynamicAnn::Dim512(Ann::build(&fixed_vectors, &metadata))
+            }
+            1024 => {
+                let fixed_vectors: Vec<Vector<1024>> = vectors
+                    .into_iter()
+                    .map(|v| {
+                        let arr: [f32; 1024] = v.try_into()
+                            .map_err(|_| anyhow::anyhow!("Failed to convert vector to [f32; 1024]"))?;
+                        Ok(arr)
+                    })
+                    .collect::<Result<Vec<_>, anyhow::Error>>()?;
+                DynamicAnn::Dim1024(Ann::build(&fixed_vectors, &metadata))
+            }
+            _ => unreachable!("Dimension validation should have caught this")
+        };
+        
+        // Use the dimension method to verify the result
+        assert_eq!(ann.dimension(), dimension);
+        Ok(ann)
+    }
+
+    pub fn query<'a>(&'a self, query: &[f32], k: i32) -> Result<Vec<AnnResult<'a, M>>, anyhow::Error> {
+        match self {
+            DynamicAnn::Dim512(ann) => {
+                let arr: [f32; 512] = query.try_into()
+                    .map_err(|_| anyhow::anyhow!("Query vector has wrong dimension for 512D ANN"))?;
+                Ok(ann.query(&arr, k))
+            }
+            DynamicAnn::Dim1024(ann) => {
+                let arr: [f32; 1024] = query.try_into()
+                    .map_err(|_| anyhow::anyhow!("Query vector has wrong dimension for 1024D ANN"))?;
+                Ok(ann.query(&arr, k))
+            }
+        }
+    }
+
+    pub fn dimension(&self) -> usize {
+        match self {
+            DynamicAnn::Dim512(_) => 512,
+            DynamicAnn::Dim1024(_) => 1024,
+        }
+    }
+}
+
+impl<M: Serialize + Clone> Serialize for DynamicAnn<M> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            DynamicAnn::Dim512(ann) => ann.serialize(serializer),
+            DynamicAnn::Dim1024(ann) => ann.serialize(serializer),
+        }
+    }
+}
+
+impl<'de, M: Deserialize<'de> + Clone> Deserialize<'de> for DynamicAnn<M> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Try to deserialize as 512D first, then 1024D
+        if let Ok(ann) = Ann::<512, M>::deserialize(deserializer) {
+            return Ok(DynamicAnn::Dim512(ann));
+        }
+        
+        // Reset the deserializer and try 1024D
+        // This is a bit tricky with serde, so we'll use a different approach
+        // For now, we'll require the dimension to be known at compile time
+        // and use the original Ann<D, M> for serialization/deserialization
+        Err(serde::de::Error::custom("DynamicAnn deserialization not implemented"))
+    }
+}
+
 impl<const D: usize, M: Serialize> Serialize for Ann<D, M> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut state = serializer.serialize_struct("Ann", 3)?;
@@ -99,27 +195,25 @@ impl<'a, M> AnnResult<'a, M> {
 }
 
 impl<const D: usize, M: Clone> Ann<D, M> {
-    #[tracing::instrument(skip(vectors, metadata))]
     pub fn build(vectors: &[Vector<D>], metadata: &[M]) -> Self {
-        assert_eq!(vectors.len(), metadata.len(), "vectors and metadata must have same length");
-        let index = Index::build(vectors, 1, 1, 42);
+        let index = Index::build(vectors, 16, 100, 42);
         Self {
             index,
             vectors: vectors.to_vec(),
             metadata: metadata.to_vec(),
         }
     }
-    #[tracing::instrument(skip(self, query))]
+
     pub fn query<'a>(&'a self, query: &Vector<D>, k: i32) -> Vec<AnnResult<'a, M>> {
-        self.index
-            .search(&self.vectors, query, k as usize)
+        let results = self.index.search(&self.vectors, query, k as usize);
+        results
             .into_iter()
-            .map(|(idx, dist)| AnnResult::new(&self.metadata[idx], dist))
+            .map(|(idx, distance)| AnnResult::new(&self.metadata[idx], distance))
             .collect()
     }
 }
 
-#[derive(Serialize, Deserialize, Clone,Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ChunkMeta {
     pub file: String,
     pub code: String,
