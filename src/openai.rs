@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use anyhow::{Result, anyhow};
 
 #[derive(Clone)]
@@ -42,6 +43,24 @@ pub struct OpenAIRequest {
   pub temperature: Option<f32>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub stream: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub response_format: Option<ResponseFormat>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct ResponseFormat {
+  #[serde(rename = "type")]
+  pub format_type: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub json_schema: Option<JsonSchema>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct JsonSchema {
+  pub name: String,
+  pub schema: Value,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub strict: Option<bool>,
 }
 
 #[derive(Serialize, Debug)]

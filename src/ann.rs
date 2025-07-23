@@ -217,4 +217,6 @@ impl<const D: usize, M: Clone> Ann<D, M> {
 pub struct ChunkMeta {
     pub file: String,
     pub code: String,
+    pub language: Option<String>,
+    pub extension: Option<String>,
 }

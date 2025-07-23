@@ -13,7 +13,7 @@ use std::io::{stdout, Write};
 use std::str::FromStr;
 
 mod chunker; mod embedding; mod ann; mod rerank; mod hyde;
-mod openai;
+mod openai; mod language;
 use ann::ChunkMeta;
 use embedding::EmbeddingModel;
 
@@ -48,7 +48,7 @@ enum Cmd {
         #[arg(long)]
         model_id: Option<String>,
         /// Predefined embedding model type
-        #[arg(long, value_enum, default_value_t = EmbeddingModelType::Jina)]
+        #[arg(long, value_enum, default_value_t = EmbeddingModelType::Qwen3)]
         model_type: EmbeddingModelType,
     },
     /// Query a previously built index using a question to find relevant code and synthesize an answer.
@@ -58,7 +58,7 @@ enum Cmd {
         #[arg(long)]
         model_id: Option<String>,
         /// Predefined embedding model type
-        #[arg(long, value_enum, default_value_t = EmbeddingModelType::Jina)]
+        #[arg(long, value_enum, default_value_t = EmbeddingModelType::Qwen3)]
         model_type: EmbeddingModelType,
         q: String,
         k: usize,
@@ -66,6 +66,12 @@ enum Cmd {
         rerank_model: Option<String>,
         #[arg(long, action = clap::ArgAction::SetTrue)]
         use_rerank: bool,
+        /// Model for Hyde queries (default: gpt-4o-mini)
+        #[arg(long, default_value = "gpt-4o-mini")]
+        hyde_model: String,
+        /// Model for final answer synthesis (default: gpt-4o)
+        #[arg(long, default_value = "gpt-4o")]
+        answer_model: String,
     },
     /// Start an interactive REPL session for efficient iterative indexing and querying.
     Interactive { 
@@ -73,8 +79,14 @@ enum Cmd {
         #[arg(long)]
         model_id: Option<String>,
         /// Predefined embedding model type
-        #[arg(long, value_enum, default_value_t = EmbeddingModelType::Jina)]
+        #[arg(long, value_enum, default_value_t = EmbeddingModelType::Qwen3)]
         model_type: EmbeddingModelType,
+        /// Model for Hyde queries (default: gpt-4o-mini)
+        #[arg(long, default_value = "gpt-4o-mini")]
+        hyde_model: String,
+        /// Model for final answer synthesis (default: gpt-4o)
+        #[arg(long, default_value = "gpt-4o")]
+        answer_model: String,
     },
 }
 
@@ -129,6 +141,12 @@ struct ReplQueryArgs {
     rerank_model: Option<String>,
     #[arg(long, action = clap::ArgAction::SetTrue)]
     use_rerank: bool,
+    /// Model for Hyde queries (default: gpt-4o-mini)
+    #[arg(long, default_value = "gpt-4o-mini")]
+    hyde_model: String,
+    /// Model for final answer synthesis (default: gpt-4o)
+    #[arg(long, default_value = "gpt-4o")]
+    answer_model: String,
 }
 
 struct SessionState {
@@ -186,13 +204,13 @@ async fn execute_index_command(
     let mut processing_futures = Vec::new();
 
     for (batch_idx, chunk_batch_slice) in chunks.chunks(app_batch_size).enumerate() {
-        let owned_chunk_batch: Vec<(String, String)> = chunk_batch_slice.to_vec();
+        let owned_chunk_batch: Vec<chunker::CodeChunk> = chunk_batch_slice.to_vec();
         let pb_clone = Arc::clone(&pb);
         
         // The embedder reference can be used directly as it's Sync
         // and the tasks are awaited within this function's scope.
         let future = async move {
-            let texts_to_embed: Vec<String> = owned_chunk_batch.iter().map(|(_, code_snippet)| code_snippet.clone()).collect();
+            let texts_to_embed: Vec<String> = owned_chunk_batch.iter().map(|chunk| chunk.content.clone()).collect();
             let batch_len = owned_chunk_batch.len() as u64; // Get length before potential move
             
             let result = if texts_to_embed.is_empty() {
@@ -223,9 +241,14 @@ async fn execute_index_command(
             Ok((original_chunk_batch, embedding_arrays)) => {
                 if !embedding_arrays.is_empty() {
                     for (embedding_idx, embedding_vector) in embedding_arrays.iter().enumerate() {
-                        let (file_path, code_snippet) = &original_chunk_batch[embedding_idx];
+                        let chunk = &original_chunk_batch[embedding_idx];
                         vecs.push(embedding_vector.clone());
-                        metas.push(ChunkMeta { file: file_path.clone(), code: code_snippet.clone() });
+                        metas.push(ChunkMeta { 
+                            file: chunk.file_path.clone(), 
+                            code: chunk.content.clone(),
+                            language: chunk.language.clone(),
+                            extension: chunk.extension.clone(),
+                        });
                     }
                 }
             }
@@ -321,14 +344,29 @@ async fn execute_query_command(
     query_string: &str,
     k: usize,
     use_rerank_flag: bool,
+    hyde_model: &str,
+    answer_model: &str,
 ) -> Result<()> {
     let openai_api_key = std::env::var("OPENAI_API_KEY")
         .map_err(|_| anyhow::anyhow!("OPENAI_API_KEY not set. This key is required for the query command."))?;
     
     let openai_api_url = std::env::var("OPENAI_API_URL").ok();
     
-    let openai_client = {
-        let client = openai::OpenAIClient::new(&openai_api_key);
+    // Create client for Hyde queries (cheaper model)
+    let hyde_client = {
+        let client = openai::OpenAIClient::new(&openai_api_key)
+            .with_model(hyde_model);
+        if let Some(url) = openai_api_url.as_ref() {
+            client.with_api_url(url)
+        } else {
+            client
+        }
+    };
+    
+    // Create client for final answers (better model)
+    let answer_client = {
+        let client = openai::OpenAIClient::new(&openai_api_key)
+            .with_model(answer_model);
         if let Some(url) = openai_api_url.as_ref() {
             client.with_api_url(url)
         } else {
@@ -348,12 +386,11 @@ async fn execute_query_command(
         None
     };
     
-    let hyde_model_name = openai_client.model.clone(); // Get model name
-    let hyde_client = openai_client; // hyde_client takes ownership
+    let answer_model_name = answer_client.model.clone(); // Get model name for progress display
 
     let effective_use_rerank = use_rerank_flag && reranker_instance.is_some();
 
-    let hyde = hyde::Hyde::new(hyde_client, embedder, ann_index, 1000, reranker_instance);
+    let hyde = hyde::Hyde::new(hyde_client, answer_client, embedder, ann_index, 1000, reranker_instance);
     
     // Start progress bar
     let pb = ProgressBar::new_spinner();
@@ -364,7 +401,7 @@ async fn execute_query_command(
             .template("Generating answer with {msg} {spinner:.blue}")
             .unwrap(),
     );
-    pb.set_message(hyde_model_name.clone());
+    pb.set_message(answer_model_name.clone());
 
     let start_time = std::time::Instant::now();
 
@@ -378,7 +415,7 @@ async fn execute_query_command(
     match hits_result {
         Ok(hits) => { // hits is HydeResponse, containing the stream
             print_query_results(hits).await?; 
-            println!("Answer generated by {} in {:.2?}:", hyde_model_name, duration);
+            println!("Answer generated by {} in {:.2?}:", answer_model_name, duration);
             Ok(())
         }
         Err(e) => {
@@ -405,7 +442,7 @@ async fn main() -> Result<()> {
             let embedder = embedding::Embedder::new(embedding_model)?;
             execute_index_command(&embedder, &repo, &out).await?;
         }
-        Cmd::Query { index_dir, model_id, model_type, q, k, rerank_model, use_rerank } => {
+        Cmd::Query { index_dir, model_id, model_type, q, k, rerank_model, use_rerank, hyde_model, answer_model } => {
             let embedding_model = resolve_embedding_model(model_id, model_type)?;
             info!("Loading embedder with model: {}", embedding_model);
             let embedder = Arc::new(embedding::Embedder::new(embedding_model)?); 
@@ -423,9 +460,9 @@ async fn main() -> Result<()> {
                 return Err(anyhow::anyhow!("Failed to deserialize ANN index. Unsupported dimension."));
             };
             
-            execute_query_command(embedder, &ann_data, rerank_model.as_deref(), &q, k, use_rerank).await?;
+            execute_query_command(embedder, &ann_data, rerank_model.as_deref(), &q, k, use_rerank, &hyde_model, &answer_model).await?;
         }
-        Cmd::Interactive { model_id, model_type } => {
+        Cmd::Interactive { model_id, model_type, hyde_model, answer_model } => {
             let embedding_model = resolve_embedding_model(model_id, model_type)?;
             info!("Starting interactive session. Loading embedder with model: {}", embedding_model);
             let embedder_instance = embedding::Embedder::new(embedding_model.clone())?;
@@ -537,6 +574,8 @@ async fn main() -> Result<()> {
                                                 &final_query_string,
                                                 args.k,
                                                 args.use_rerank,
+                                                &args.hyde_model,
+                                                &args.answer_model,
                                             ).await {
                                                 error!("Error executing query command: {}", e);
                                             }
@@ -558,7 +597,7 @@ async fn main() -> Result<()> {
                                         println!("Available REPL commands:");
                                         println!("  index --repo <path_to_repo> --out <output_dir_path>               : Indexes a repository.");
                                         println!("  load-index <index_dir_path>                                   : Loads an ANN index from the specified directory.");
-                                        println!("  query \"<your question>\" [-k <num>] [--use-rerank] [--rerank-model <path>] : Queries the loaded index.");
+                                        println!("  query \"<your question>\" [-k <num>] [--use-rerank] [--rerank-model <path>] [--synthesis-model <model>] : Queries the loaded index.");
                                         println!("  status                                                        : Shows current session status.");
                                         println!("  help                                                          : Shows this help message.");
                                         println!("  exit                                                          : Exits the interactive session.");

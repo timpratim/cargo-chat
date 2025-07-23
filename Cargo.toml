@@ -12,8 +12,20 @@ serde           = { version = "1", features = ["derive"] }
 serde_json      = "1"
 # random = "0.14" # Consider if this is still needed or if a newer version/alternative is better
 tokenizers      = "0.19"
-code-splitter   = "0.1.5"
-tree-sitter-rust= "0.21"
+code-splitter   =  { git = "https://github.com/timpratim/code-splitter", branch = "main" }
+tree-sitter = "0.25"
+tree-sitter-go = "0.23"
+tree-sitter-md = "0.2"
+tree-sitter-python = "0.23"
+tree-sitter-rust = "0.24"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-ruby = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-swift = "0.7"
 embed_anything = { version = "0.6.4",features = ["ort","metal"] }
 bincode = "2.0.1" # Consider if version 2.0.0-rc.3 is what you intend or if a stable 1.x is preferred.
 tokio = { version = "1", features = ["full"] }
