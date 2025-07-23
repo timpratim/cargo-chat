@@ -12,6 +12,48 @@ Cargo Chat helps you understand and navigate codebases using natural language. A
 - **Interactive chat mode** for exploring codebases efficiently
 - **Smart code retrieval** that finds relevant code snippets automatically
 
+## 🧠 Intent-Aware Search
+
+Cargo Chat features an advanced **intent-aware search system** that understands what you're looking for and adapts its responses accordingly:
+
+### 🎯 Smart Query Classification
+
+- **Automatic Intent Detection**: Recognizes whether you want implementation details, explanations, debugging help, or architectural overviews
+- **Language-Aware Filtering**: Detects target programming languages from your queries and prioritizes relevant files
+- **Confidence-Based Results**: Uses AI confidence scoring to determine the best mix of code and documentation
+
+### 📁 Advanced Filtering Capabilities
+
+- **Folder-Specific Search**: `"search in src folder"` or `"look in tests/"` to target specific directories
+- **Extension-Based Filtering**: `"only .rs files"` or `"show me Python code"` to focus on specific file types
+- **Exclusion Patterns**: `"exclude tests"` or `"skip target folder"` to remove unwanted results
+- **Combined Filtering**: `"Rust files in src folder excluding tests"` for precise targeting
+
+### 🤖 Intelligent Response Generation
+
+- **Role-Based Prompts**: System adapts as a code expert, senior developer, technical educator, or debugging specialist based on your query
+- **Intent-Specific Responses**:
+  - **"How does X work?"** → Architectural explanations with code examples
+  - **"Show me the implementation of Y"** → Direct code focus with minimal documentation
+  - **"Debug this error"** → Problem-solving approach with relevant code context
+  - **"Explain this concept"** → Educational responses with theory and practice
+
+### 💡 Example Queries
+
+```bash
+# Intent: Implementation focus
+query "How does the Hyde algorithm work in this Rust codebase?"
+
+# Intent: Folder-specific search
+query "Show me error handling patterns in the src folder"
+
+# Intent: Language and exclusion filtering
+query "Find authentication code in Python files, exclude tests"
+
+# Intent: Debugging assistance
+query "Why might this function be returning None?"
+```
+
 ## 🚀 Quick Start
 
 ### Prerequisites
