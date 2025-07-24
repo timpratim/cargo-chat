@@ -13,9 +13,10 @@ use std::io::{stdout, Write};
 use std::str::FromStr;
 
 mod chunker; mod embedding; mod ann; mod rerank; mod hyde;
-mod openai; mod language;
+mod openai; mod language; mod repo;
 use ann::ChunkMeta;
 use embedding::EmbeddingModel;
+use repo::RepoProfile;
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum EmbeddingModelType {
@@ -176,6 +177,82 @@ fn resolve_embedding_model(model_id: Option<String>, model_type: EmbeddingModelT
         // Use predefined model type
         Ok(model_type.to_embedding_model())
     }
+}
+
+/// Create a RepoProfile by looking for the source directory that was indexed
+async fn create_repo_profile_from_index_dir(index_dir: &str) -> Option<RepoProfile> {
+    // Try to find the original source directory from the index directory
+    // This assumes the index directory is either the same as the repo or contains a reference
+    let index_path = match std::env::current_dir() {
+        Ok(current) => current.join(index_dir),
+        Err(_) => std::path::Path::new(index_dir).to_path_buf(),
+    };
+    
+    // First try the parent directory (common case: repo/index_output)
+    if let Some(parent) = index_path.parent() {
+        if has_source_files(parent) {
+            match RepoProfile::from_directory(parent).await {
+                Ok(profile) => {
+                    info!("Created repository profile for: {}", profile.name);
+                    return Some(profile);
+                }
+                Err(e) => {
+                    warn!("Failed to create RepoProfile from parent directory {}: {}", parent.display(), e);
+                }
+            }
+        }
+    }
+    
+    // Then try the index directory itself (if it contains source files)
+    if has_source_files(&index_path) {
+        match RepoProfile::from_directory(&index_path).await {
+            Ok(profile) => {
+                info!("Created repository profile for: {}", profile.name);
+                return Some(profile);
+            }
+            Err(e) => {
+                warn!("Failed to create RepoProfile from index directory {}: {}", index_path.display(), e);
+            }
+        }
+    }
+    
+    warn!("Could not create RepoProfile - no source files found near index directory: {}", index_dir);
+    None
+}
+
+/// Check if a directory contains source files (indicating it's likely a repository root)
+fn has_source_files(path: &std::path::Path) -> bool {
+    if !path.exists() || !path.is_dir() {
+        return false;
+    }
+    
+    // Check for common indicators of a source repository
+    let indicators = [
+        "src", "lib", "main.rs", "lib.rs", "Cargo.toml", "package.json", 
+        "pom.xml", "go.mod", "pyproject.toml", "requirements.txt"
+    ];
+    
+    for indicator in &indicators {
+        let indicator_path = path.join(indicator);
+        if indicator_path.exists() {
+            return true;
+        }
+    }
+    
+    // Check for common source file extensions in the root
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Some(extension) = entry.path().extension() {
+                if let Some(ext_str) = extension.to_str() {
+                    if matches!(ext_str, "rs" | "py" | "js" | "ts" | "java" | "go" | "cpp" | "c" | "h") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    
+    false
 }
 
 async fn execute_index_command(
@@ -340,6 +417,7 @@ async fn print_query_results(mut hits: hyde::HydeResponse) -> Result<()> {
 async fn execute_query_command(
     embedder: Arc<embedding::Embedder>,
     ann_index: &ann::DynamicAnn<ChunkMeta>,
+    index_dir: &str,
     rerank_model_path: Option<&str>,
     query_string: &str,
     k: usize,
@@ -390,7 +468,10 @@ async fn execute_query_command(
 
     let effective_use_rerank = use_rerank_flag && reranker_instance.is_some();
 
-    let hyde = hyde::Hyde::new(hyde_client, answer_client, embedder, ann_index, 1000, reranker_instance);
+    // Create repository profile for better context
+    let repo_profile = create_repo_profile_from_index_dir(index_dir).await;
+
+    let hyde = hyde::Hyde::new(hyde_client, answer_client, embedder, ann_index, 1000, reranker_instance, repo_profile);
     
     // Start progress bar
     let pb = ProgressBar::new_spinner();
@@ -460,7 +541,7 @@ async fn main() -> Result<()> {
                 return Err(anyhow::anyhow!("Failed to deserialize ANN index. Unsupported dimension."));
             };
             
-            execute_query_command(embedder, &ann_data, rerank_model.as_deref(), &q, k, use_rerank, &hyde_model, &answer_model).await?;
+            execute_query_command(embedder, &ann_data, &index_dir, rerank_model.as_deref(), &q, k, use_rerank, &hyde_model, &answer_model).await?;
         }
         Cmd::Interactive { model_id, model_type, hyde_model, answer_model } => {
             let embedding_model = resolve_embedding_model(model_id, model_type)?;
@@ -567,17 +648,22 @@ async fn main() -> Result<()> {
                                         let final_query_string = args.query_parts.join(" ");
                                         info!("Executing REPL Query: '{}', k={}", final_query_string, args.k);
                                         if let Some(ref ann_data) = session_state.ann_index {
-                                            if let Err(e) = execute_query_command(
-                                                session_state.embedder.clone(),
-                                                ann_data,
-                                                args.rerank_model.as_deref(),
-                                                &final_query_string,
-                                                args.k,
-                                                args.use_rerank,
-                                                &args.hyde_model,
-                                                &args.answer_model,
-                                            ).await {
-                                                error!("Error executing query command: {}", e);
+                                            if let Some(ref index_path) = session_state.current_index_path {
+                                                if let Err(e) = execute_query_command(
+                                                    session_state.embedder.clone(),
+                                                    ann_data,
+                                                    index_path,
+                                                    args.rerank_model.as_deref(),
+                                                    &final_query_string,
+                                                    args.k,
+                                                    args.use_rerank,
+                                                    &args.hyde_model,
+                                                    &args.answer_model,
+                                                ).await {
+                                                    error!("Error executing query command: {}", e);
+                                                }
+                                            } else {
+                                                error!("No index path stored. This is a bug.");
                                             }
                                         } else {
                                             error!("No index loaded. Please use 'load_index <path>' first.");

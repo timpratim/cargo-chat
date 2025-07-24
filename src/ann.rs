@@ -22,30 +22,55 @@ impl<M: Clone> DynamicAnn<M> {
             return Err(anyhow::anyhow!("Cannot build ANN with empty vectors"));
         }
         
+        if metadata.is_empty() {
+            return Err(anyhow::anyhow!("Cannot build ANN with empty metadata"));
+        }
+        
+        if vectors.len() != metadata.len() {
+            return Err(anyhow::anyhow!("Vector count ({}) does not match metadata count ({})", 
+                vectors.len(), metadata.len()));
+        }
+        
         let dimension = vectors[0].len();
+        if dimension == 0 {
+            return Err(anyhow::anyhow!("Cannot build ANN with zero-dimensional vectors"));
+        }
+        
+        // Validate all vectors have the same dimension
+        for (i, vector) in vectors.iter().enumerate() {
+            if vector.len() != dimension {
+                return Err(anyhow::anyhow!("Vector {} has dimension {} but expected {}", 
+                    i, vector.len(), dimension));
+            }
+        }
+        
         // Validate dimension matches expected values
         if dimension != 512 && dimension != 1024 {
-            return Err(anyhow::anyhow!("Unsupported embedding dimension: {}", dimension));
+            return Err(anyhow::anyhow!("Unsupported embedding dimension: {}. Only 512 and 1024 are supported.", dimension));
         }
         
         let ann = match dimension {
             512 => {
+                tracing::debug!("Building 512-dimensional ANN with {} vectors", vectors.len());
                 let fixed_vectors: Vec<Vector<512>> = vectors
                     .into_iter()
-                    .map(|v| {
+                    .enumerate()
+                    .map(|(i, v)| {
                         let arr: [f32; 512] = v.try_into()
-                            .map_err(|_| anyhow::anyhow!("Failed to convert vector to [f32; 512]"))?;
+                            .map_err(|_| anyhow::anyhow!("Failed to convert vector {} to [f32; 512]: length mismatch", i))?;
                         Ok(arr)
                     })
                     .collect::<Result<Vec<_>, anyhow::Error>>()?;
                 DynamicAnn::Dim512(Ann::build(&fixed_vectors, &metadata))
             }
             1024 => {
+                tracing::debug!("Building 1024-dimensional ANN with {} vectors", vectors.len());
                 let fixed_vectors: Vec<Vector<1024>> = vectors
                     .into_iter()
-                    .map(|v| {
+                    .enumerate()
+                    .map(|(i, v)| {
                         let arr: [f32; 1024] = v.try_into()
-                            .map_err(|_| anyhow::anyhow!("Failed to convert vector to [f32; 1024]"))?;
+                            .map_err(|_| anyhow::anyhow!("Failed to convert vector {} to [f32; 1024]: length mismatch", i))?;
                         Ok(arr)
                     })
                     .collect::<Result<Vec<_>, anyhow::Error>>()?;
@@ -54,8 +79,13 @@ impl<M: Clone> DynamicAnn<M> {
             _ => unreachable!("Dimension validation should have caught this")
         };
         
-        // Use the dimension method to verify the result
-        assert_eq!(ann.dimension(), dimension);
+        // Verify the result
+        let actual_dimension = ann.dimension();
+        if actual_dimension != dimension {
+            return Err(anyhow::anyhow!("ANN dimension mismatch: expected {}, got {}", dimension, actual_dimension));
+        }
+        
+        tracing::info!("Successfully built {}-dimensional ANN with {} vectors", dimension, metadata.len());
         Ok(ann)
     }
 
@@ -91,18 +121,43 @@ impl<M: Serialize + Clone> Serialize for DynamicAnn<M> {
     }
 }
 
-impl<'de, M: Deserialize<'de> + Clone> Deserialize<'de> for DynamicAnn<M> {
+impl<'de, M> Deserialize<'de> for DynamicAnn<M> 
+where 
+    M: serde::de::DeserializeOwned + Clone,
+{
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // Try to deserialize as 512D first, then 1024D
-        if let Ok(ann) = Ann::<512, M>::deserialize(deserializer) {
-            return Ok(DynamicAnn::Dim512(ann));
+        // We need to deserialize to a generic representation first, then determine the dimension
+        let value: serde_json::Value = serde_json::Value::deserialize(deserializer)?;
+        
+        // Extract the vectors to determine dimension
+        let vectors = value.get("vectors")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| serde::de::Error::custom("Missing or invalid 'vectors' field"))?;
+        
+        if vectors.is_empty() {
+            return Err(serde::de::Error::custom("Cannot deserialize DynamicAnn with empty vectors"));
         }
         
-        // Reset the deserializer and try 1024D
-        // This is a bit tricky with serde, so we'll use a different approach
-        // For now, we'll require the dimension to be known at compile time
-        // and use the original Ann<D, M> for serialization/deserialization
-        Err(serde::de::Error::custom("DynamicAnn deserialization not implemented"))
+        // Check the dimension of the first vector
+        let first_vector = vectors[0].as_array()
+            .ok_or_else(|| serde::de::Error::custom("Invalid vector format"))?;
+        
+        let dimension = first_vector.len();
+        
+        // Deserialize based on detected dimension
+        match dimension {
+            512 => {
+                let ann: Ann<512, M> = serde_json::from_value(value)
+                    .map_err(|e| serde::de::Error::custom(format!("Failed to deserialize as 512D: {}", e)))?;
+                Ok(DynamicAnn::Dim512(ann))
+            },
+            1024 => {
+                let ann: Ann<1024, M> = serde_json::from_value(value)
+                    .map_err(|e| serde::de::Error::custom(format!("Failed to deserialize as 1024D: {}", e)))?;
+                Ok(DynamicAnn::Dim1024(ann))
+            },
+            _ => Err(serde::de::Error::custom(format!("Unsupported dimension: {}. Only 512 and 1024 are supported.", dimension)))
+        }
     }
 }
 
