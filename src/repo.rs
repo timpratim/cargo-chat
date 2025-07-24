@@ -1,12 +1,13 @@
 use crate::language::{detect_language_from_extension, SupportedLanguage};
 use anyhow::Result;
 use log::{debug, info, warn};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use walkdir::WalkDir;
 
 /// Repository profile containing metadata about a codebase
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoProfile {
     /// Repository name (derived from root directory name)
     pub name: String,

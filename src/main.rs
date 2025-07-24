@@ -181,13 +181,29 @@ fn resolve_embedding_model(model_id: Option<String>, model_type: EmbeddingModelT
 
 /// Create a RepoProfile by looking for the source directory that was indexed
 async fn create_repo_profile_from_index_dir(index_dir: &str) -> Option<RepoProfile> {
-    // Try to find the original source directory from the index directory
-    // This assumes the index directory is either the same as the repo or contains a reference
     let index_path = match std::env::current_dir() {
         Ok(current) => current.join(index_dir),
         Err(_) => std::path::Path::new(index_dir).to_path_buf(),
     };
     
+    // First try to load cached profile.json
+    let cached_path = index_path.join("profile.json");
+    if cached_path.exists() {
+        match std::fs::read_to_string(&cached_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<RepoProfile>(&s).ok())
+        {
+            Some(profile) => {
+                info!("Loaded cached RepoProfile from {}", cached_path.display());
+                return Some(profile);
+            }
+            None => {
+                warn!("profile.json exists but could not be parsed - regenerating...");
+            }
+        }
+    }
+    
+    // Fallback to old (expensive) logic - try to find the original source directory
     // First try the parent directory (common case: repo/index_output)
     if let Some(parent) = index_path.parent() {
         if has_source_files(parent) {
@@ -351,6 +367,13 @@ async fn execute_index_command(
     info!("Serializing and writing ANN index to {}", index_file_path);
     std::fs::write(&index_file_path, serde_json::to_vec(&ann_instance)?)?;
     info!("ANN index successfully built and saved to {}", output_dir);
+
+    // Generate and save repository profile
+    info!("Generating repository profile...");
+    let profile = repo::RepoProfile::from_directory(std::path::Path::new(repo_path)).await?;
+    let profile_path = format!("{}/profile.json", output_dir);
+    std::fs::write(&profile_path, serde_json::to_string_pretty(&profile)?)?;
+    info!("Repository profile saved to {}", profile_path);
 
     let overall_duration = overall_start_time.elapsed();
     println!("Total indexing time: {:.2?}", overall_duration); // Display total time
