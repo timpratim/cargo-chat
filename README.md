@@ -4,6 +4,76 @@
 
 Cargo Chat helps you understand and navigate codebases using natural language. Ask questions about your code and get intelligent answers backed by semantic search and AI analysis.
 
+## How does Cargo chat work?
+
+### Indexing Phase (Happens Once)
+
+**Step 1: Repository Scanning**
+
+Walks through your codebase using ignore crate (respects .gitignore)
+Identifies supported file types (Rust, Python, JS, etc.)
+
+**Step 2: Smart Chunking**
+
+Uses tree-sitter parsers for each language to understand code structure
+Splits files into semantic chunks (functions, classes, modules) rather than arbitrary line breaks
+Each chunk knows its file path, language, and context
+
+**Step 3: Embedding Generation**
+
+Converts each code chunk into a high-dimensional vector using embedding models (Jina or Qwen3)
+These vectors capture semantic meaning, not just text similarity
+
+**Step 4: Vector Index Building**
+
+Creates an ANN (Approximate Nearest Neighbor) index for fast similarity search
+Stores chunk metadata alongside vectors
+
+### 🔍 Query Phase (Every Time You Ask)
+
+**Step 1: Query Processing**
+
+You type: "How does authentication work?"
+
+**Step 2: HyDE (Hypothetical Document Embeddings)**
+
+AI generates hypothetical code snippets that would answer your question
+Example: Generates fake auth functions, middleware patterns, token validation code
+These hypothetical documents become search targets
+
+**Step 3: Intent Classification**
+
+Analyzes your query to understand:
+Do you want code implementation or conceptual explanation?
+Which programming language?
+Any folder/file filters? ("only in src", "exclude tests")
+What's your primary intent? (debugging, learning, finding examples)
+
+**Step 4: Vector Search**
+
+Converts your query + hypothetical documents to vectors
+Searches the index for semantically similar code chunks
+Returns top candidates based on cosine similarity
+
+**Step 5: Reranking**
+
+Uses Jina reranker model to re-score and re-order results
+Considers both semantic similarity and query-specific relevance
+Filters results based on detected intent and preferences
+
+**Step 6: Context Assembly**
+
+Selects the best chunks based on reranking scores
+Applies any folder/extension filters from intent classification
+Assembles relevant code snippets with file paths and context
+
+**Step 7: AI Response Generation**
+
+Sends assembled context + original query to OpenAI
+Uses role-based prompts adapted to your intent (code expert, educator, debugger)
+Streams back intelligent answer with code examples and explanations
+The magic is that each step gets smarter - HyDE improves search relevance, intent classification customizes the response, and reranking ensures you get the most relevant code for your specific question.
+
 ## ✨ What Can You Do?
 
 - **Ask questions about your codebase** in plain English
@@ -96,7 +166,7 @@ export OPENAI_API_KEY="your-api-key-here"
 index --repo /path/to/your/project --out ./my_project_index
 ```
 
-### Step 3: Ask Questions!
+### Step 3: Ask Questions
 
 ```bash
 # Ask about your code
@@ -119,14 +189,17 @@ query "What are the main API endpoints?"
 ### Common Issues
 
 **"OpenAI API key not found"**
+
 - Make sure you've set the `OPENAI_API_KEY` environment variable
 - Verify your API key is valid and has sufficient credits
 
 **"Model download failed"**
+
 - Check your internet connection
 - Ensure you have sufficient disk space for embedding models
 
 **"No results found"**
+
 - Try rephrasing your question
 - Make sure your codebase was indexed successfully
 - Check if your question matches the programming language in your codebase
@@ -150,6 +223,7 @@ We welcome contributions to Cargo Chat! Here's how you can help:
 - **Improve documentation** to help other users
 
 Before contributing:
+
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
@@ -163,7 +237,9 @@ See [LICENSE.md](./LICENSE.md) for license information.
 ---
 
 **Happy coding! 🚀**
+
 - **Java** (.java) - Standard Java language support
+
 - **C++** (.cpp, .cxx, .cc, .hpp, .hxx, .hh) - Modern C++ support
 - **C** (.c, .h) - Standard C language support
 - **Ruby** (.rb) - Ruby language support
@@ -178,3 +254,13 @@ See [LICENSE.md](./LICENSE.md) for license information.
 - **Automatic Detection**: Files are automatically categorized by extension
 - **Language-Specific Parsing**: Each language uses its dedicated tree-sitter grammar for accurate code chunking
 - **Adaptive AI Responses**: Prompts and responses are tailored to the detected programming language
+
+## 📚 Resources to lean more about IR, AI IDE internals
+
+1. [How Codeium Breaks Through the Ceiling for Retrieval: Kevin Hou](https://youtu.be/DuZXbinJ4Uc?feature=shared)
+2. [candle](https://github.com/huggingface/candle)
+3. [tree-sitter](https://tree-sitter.github.io/tree-sitter/)
+4. [tree-sitter-playground](https://tree-sitter.github.io/tree-sitter/7-playground.html)
+5. [HyDE](https://docs.haystack.deepset.ai/docs/hypothetical-document-embeddings-hyde)
+6. [Indexing](https://github.com/StarlightSearch/EmbedAnything)
+7. [Embedding leaderboard by Hugging face](https://huggingface.co/spaces/mteb/leaderboard)
