@@ -74,6 +74,48 @@ Uses role-based prompts adapted to your intent (code expert, educator, debugger)
 Streams back intelligent answer with code examples and explanations
 The magic is that each step gets smarter - HyDE improves search relevance, intent classification customizes the response, and reranking ensures you get the most relevant code for your specific question.
 
+## 🏗️ System Architecture
+
+```mermaid
+graph TD
+    %% Indexing Phase
+    subgraph "📚 INDEXING PHASE (One Time)"
+        A[Repository Scanning<br/>Walk codebase, identify file types] --> B[Smart Chunking<br/>Tree-sitter parsers split by functions/classes]
+        B --> C[Embedding Generation<br/>Convert chunks to vectors<br/>Jina/Qwen3 models]
+        C --> D[Vector Index Building<br/>ANN index + metadata storage]
+    end
+    
+    %% Query Phase
+    subgraph "🔍 QUERY PHASE (Every Query)"
+        E[User Query<br/>How does authentication work?] --> F[HyDE Processing<br/>Generate hypothetical code snippets<br/>that would answer the query]
+        F --> G[Intent Classification<br/>• Code vs explanation?<br/>• Target language?<br/>• Folder filters?<br/>• Primary intent?]
+        G --> H[Vector Search<br/>Query + hypothetical docs → vectors<br/>Search index for similar chunks]
+        H --> I[Reranking<br/>Jina reranker re-scores results<br/>for query-specific relevance]
+        I --> J[Context Assembly<br/>Select best chunks<br/>Apply filters from intent]
+        J --> K[AI Response Generation<br/>OpenAI + role-based prompts<br/>Stream intelligent answer]
+    end
+    
+    %% Connection between phases
+    D -.->|Provides search index| H
+    
+    %% Styling
+    style A fill:#e3f2fd
+    style B fill:#f3e5f5
+    style C fill:#fff3e0
+    style D fill:#e8f5e8
+    style F fill:#fff9c4
+    style G fill:#fce4ec
+    style I fill:#fff3e0
+    style K fill:#e8f5e8
+```
+
+**Key Technologies:**
+- **Tree-sitter**: Language-aware code parsing and chunking
+- **HyDE**: Hypothetical Document Embeddings for better search relevance
+- **Vector Embeddings**: Semantic code representation using Jina/Qwen3 models
+- **Reranking**: Query-specific relevance scoring with Jina reranker
+- **Intent Classification**: AI-powered query understanding and response adaptation
+
 ## ✨ What Can You Do?
 
 - **Ask questions about your codebase** in plain English
