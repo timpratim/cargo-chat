@@ -189,32 +189,73 @@ cargo build --release
 cargo build --release --features with-file-history
 ```
 
-## 💡 How to Use
+## 💡 How to Use Cargo Chat CLI
 
-### Step 1: Start Interactive Mode
+### Step-by-Step Guide: From Setup to Asking Questions
+
+#### Step 1: Build the Project
 
 ```bash
-# Set your OpenAI API key
-export OPENAI_API_KEY="your-api-key-here"
+# Build cargo-chat with file history support
+make build
 
-# Start cargo-chat
-./target/release/cargo_chat interactive
+# Or use cargo directly
+cargo build --release --features with-file-history
 ```
 
-### Step 2: Index Your Codebase
+#### Step 2: Set Your OpenAI API Key
 
 ```bash
-# Inside cargo-chat, index your project
+# Set your OpenAI API key (required for AI responses)
+export OPENAI_API_KEY="your-api-key-here"
+```
+
+Get your API key from [OpenAI's website](https://platform.openai.com/api-keys).
+
+#### Step 3: Start Interactive Mode
+
+```bash
+# Start cargo-chat interactive session
+./target/release/cargo_chat interactive
+
+# Or using make
+make run
+```
+
+#### Step 4: Index Your Codebase
+
+Once in interactive mode, index a repository:
+
+```bash
+# Index your current project
+index --repo . --out ./index_file
+
+# Or index any other project
 index --repo /path/to/your/project --out ./my_project_index
 ```
 
-### Step 3: Ask Questions
+This will:
+- Scan your repository for supported file types
+- Chunk code using tree-sitter parsers
+- Generate embeddings using AI models
+- Build a searchable vector index
+
+#### Step 5: Load the Index (if needed)
 
 ```bash
-# Ask about your code
+# Load an existing index
+load_index ./index_file
+```
+
+#### Step 6: Ask Questions About Your Code
+
+```bash
+# Ask about your codebase
 query "How does authentication work in this codebase?"
 query "Show me examples of error handling"
 query "What are the main API endpoints?"
+query "Find all TODO comments"
+query "How is logging implemented?"
 ```
 
 ### Available Commands

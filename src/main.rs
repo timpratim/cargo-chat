@@ -13,7 +13,7 @@ use std::io::{stdout, Write};
 use std::str::FromStr;
 
 mod chunker; mod embedding; mod ann; mod rerank; mod hyde;
-mod openai; mod language; mod repo;
+mod openai; mod language; mod repo; mod llm; mod agent_tools;
 use ann::ChunkMeta;
 use embedding::EmbeddingModel;
 use repo::RepoProfile;
@@ -88,6 +88,15 @@ enum Cmd {
         /// Model for final answer synthesis (default: gpt-4o)
         #[arg(long, default_value = "gpt-4o")]
         answer_model: String,
+    },
+    /// Start an AI agent that can answer questions about indexed codebases using tools.
+    Agent {
+        /// LLM backend to use (anthropic or openai)
+        #[arg(long, default_value = "anthropic")]
+        backend: String,
+        /// Custom model name (optional)
+        #[arg(long)]
+        model: Option<String>,
     },
 }
 
@@ -743,6 +752,275 @@ async fn main() -> Result<()> {
                 error!("Failed to save REPL history to {:?}.", history_file_path);
             }
         }
+        Cmd::Agent { backend, model } => {
+            execute_agent_command(backend, model).await?;
+        }
     }
+    Ok(())
+}
+
+async fn execute_agent_command(backend: String, model: Option<String>) -> Result<()> {
+    use llm::{Backend, Anthropic, OpenAi, Block, Msg};
+    use agent_tools::{AgentToolsState, build_tools, exec_tool};
+    use std::io::{self, Write};
+
+    // Load environment variables
+    dotenvy::dotenv().ok();
+
+    // Create backend
+    let llm_backend: Box<dyn Backend> = match backend.to_lowercase().as_str() {
+        "openai" => {
+            let api_key = std::env::var("OPENAI_API_KEY")
+                .map_err(|_| anyhow::anyhow!("OPENAI_API_KEY not set"))?;
+            let mut client = OpenAi::new(api_key);
+            if let Some(m) = model {
+                client = client.with_model(&m);
+            }
+            if let Ok(url) = std::env::var("OPENAI_API_URL") {
+                client = client.with_api_url(&url);
+            }
+            Box::new(client)
+        }
+        _ => {
+            let api_key = std::env::var("ANTHROPIC_API_KEY")
+                .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
+            let mut client = Anthropic::new(api_key);
+            if let Some(m) = model {
+                client = client.with_model(&m);
+            }
+            Box::new(client)
+        }
+    };
+
+    let mut chat: Vec<Msg> = Vec::new();
+    let tools = build_tools();
+    let mut agent_state = AgentToolsState::new();
+
+    println!("🤖 Cargo Chat Agent - Codebase Q&A Assistant");
+    println!("Backend: {}", backend);
+    println!("Commands: Ask questions about codebases, or type 'quit' to exit");
+    println!("First, load a codebase with: load the index from /path/to/index\n");
+
+    loop {
+        // Read user input
+        print!("You: ");
+        io::stdout().flush()?;
+        let mut buf = String::new();
+        if io::stdin().read_line(&mut buf)? == 0 { 
+            break; 
+        }
+        let user_input = buf.trim();
+        
+        if user_input.is_empty() {
+            continue;
+        }
+        
+        if user_input == "quit" || user_input == "exit" {
+            break;
+        }
+
+        // Add user message
+        chat.push(Msg { 
+            role: "user", 
+            blocks: vec![Block::Text(user_input.to_string())] 
+        });
+
+        // Call LLM with streaming
+        print!("🤖: ");
+        io::stdout().flush()?;
+
+        // Try streaming first, with robust fallback
+        let streaming_result = llm_backend.chat_stream(&chat, &tools).await;
+        
+        match streaming_result {
+            Ok(mut stream) => {
+                let mut response_blocks = Vec::new();
+                let mut has_text_output = false;
+                let mut received_any_blocks = false;
+
+                while let Some(block_result) = stream.next().await {
+                    received_any_blocks = true;
+                    match block_result {
+                        Ok(block) => {
+                            match block {
+                                Block::Text(text) => {
+                                    print!("{}", text);
+                                    io::stdout().flush()?;
+                                    has_text_output = true;
+                                    response_blocks.push(Block::Text(text));
+                                }
+                                Block::ToolUse { id, name, input } => {
+                                    // Execute tool
+                                    match exec_tool(&name, &input, &mut agent_state).await {
+                                        Ok(result) => {
+                                            // Always display tool results
+                                            print!("{}", result);
+                                            io::stdout().flush()?;
+                                            has_text_output = true;
+                                            response_blocks.push(Block::ToolUse { id: id.clone(), name: name.clone(), input });
+                                            response_blocks.push(Block::ToolResult { 
+                                                id: id.clone(), 
+                                                name: "tool_result".to_string(), 
+                                                result: serde_json::Value::String(result) 
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let error_msg = format!("Tool error: {}", e);
+                                            print!("{}", error_msg);
+                                            io::stdout().flush()?;
+                                            response_blocks.push(Block::ToolUse { id: id.clone(), name: name.clone(), input });
+                                            response_blocks.push(Block::ToolResult { 
+                                                id: id.clone(), 
+                                                name: "tool_result".to_string(), 
+                                                result: serde_json::Value::String(error_msg) 
+                                            });
+                                        }
+                                    }
+                                }
+                                Block::ToolResult { .. } => {
+                                    // This shouldn't happen in assistant responses
+                                    response_blocks.push(block);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Stream error: {}", e);
+                            println!("\n[Error in stream: {}]", e);
+                        }
+                    }
+                }
+
+                if !received_any_blocks {
+                    // If no blocks received, fall back to non-streaming
+                    match llm_backend.chat(&chat, &tools).await {
+                        Ok(blocks) => {
+                            for block in blocks {
+                                match block {
+                                    Block::Text(text) => {
+                                        print!("{}", text);
+                                        io::stdout().flush()?;
+                                        has_text_output = true;
+                                        response_blocks.push(Block::Text(text));
+                                    }
+                                    Block::ToolUse { id, name, input } => {
+                                        // Execute tool
+                                        match exec_tool(&name, &input, &mut agent_state).await {
+                                            Ok(result) => {
+                                                // Always display tool results
+                                                print!("{}", result);
+                                                io::stdout().flush()?;
+                                                has_text_output = true;
+                                                response_blocks.push(Block::ToolUse { id: id.clone(), name: name.clone(), input });
+                                                response_blocks.push(Block::ToolResult { 
+                                                    id: id.clone(), 
+                                                    name: "tool_result".to_string(), 
+                                                    result: serde_json::Value::String(result) 
+                                                });
+                                            }
+                                            Err(e) => {
+                                                let error_msg = format!("Tool error: {}", e);
+                                                print!("{}", error_msg);
+                                                io::stdout().flush()?;
+                                                response_blocks.push(Block::ToolUse { id: id.clone(), name: name.clone(), input });
+                                                response_blocks.push(Block::ToolResult { 
+                                                    id: id.clone(), 
+                                                    name: "tool_result".to_string(), 
+                                                    result: serde_json::Value::String(error_msg) 
+                                                });
+                                            }
+                                        }
+                                    }
+                                    Block::ToolResult { .. } => {
+                                        // This shouldn't happen in assistant responses
+                                        response_blocks.push(block);
+                                    }
+                                }
+                            }
+                        }
+                        Err(_e) => {
+                            // Fallback also failed, but continue
+                        }
+                    }
+                }
+                println!(); // New line after response
+
+                // Add assistant response to chat
+                if !response_blocks.is_empty() {
+                    chat.push(Msg { 
+                        role: "assistant", 
+                        blocks: response_blocks 
+                    });
+                }
+            }
+            Err(_e) => {
+                // Fallback to non-streaming
+                match llm_backend.chat(&chat, &tools).await {
+                    Ok(blocks) => {
+                        let mut response_blocks = Vec::new();
+                        let mut has_text_output = false;
+
+                        for block in blocks {
+                            match block {
+                                Block::Text(text) => {
+                                    print!("{}", text);
+                                    io::stdout().flush()?;
+                                    has_text_output = true;
+                                    response_blocks.push(Block::Text(text));
+                                }
+                                Block::ToolUse { id, name, input } => {
+                                    // Execute tool
+                                    match exec_tool(&name, &input, &mut agent_state).await {
+                                        Ok(result) => {
+                                            // Always display tool results in fallback too
+                                            print!("{}", result);
+                                            io::stdout().flush()?;
+                                            has_text_output = true;
+                                            response_blocks.push(Block::ToolUse { id: id.clone(), name: name.clone(), input });
+                                            response_blocks.push(Block::ToolResult { 
+                                                id: id.clone(), 
+                                                name: "tool_result".to_string(), 
+                                                result: serde_json::Value::String(result) 
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let error_msg = format!("Tool error: {}", e);
+                                            print!("{}", error_msg);
+                                            io::stdout().flush()?;
+                                            response_blocks.push(Block::ToolUse { id: id.clone(), name: name.clone(), input });
+                                            response_blocks.push(Block::ToolResult { 
+                                                id: id.clone(), 
+                                                name: "tool_result".to_string(), 
+                                                result: serde_json::Value::String(error_msg) 
+                                            });
+                                        }
+                                    }
+                                }
+                                Block::ToolResult { .. } => {
+                                    // This shouldn't happen in assistant responses
+                                    response_blocks.push(block);
+                                }
+                            }
+                        }
+
+                        println!(); // New line after response
+
+                        // Add assistant response to chat
+                        if !response_blocks.is_empty() {
+                            chat.push(Msg { 
+                                role: "assistant", 
+                                blocks: response_blocks 
+                            });
+                        }
+                    }
+                    Err(fallback_e) => {
+                        error!("Both streaming and non-streaming failed: {}", fallback_e);
+                        println!("Sorry, I encountered an error. Please try again.");
+                    }
+                }
+            }
+        }
+    }
+
+    println!("Goodbye! 👋");
     Ok(())
 }

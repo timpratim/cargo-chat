@@ -42,6 +42,7 @@ futures         = "0.3"
 futures-util    = { version = "0.3", features = ["io"] }
 async-stream    = "0.3"
 dotenvy         = "0.15"
+async-trait     = "0.1"
 
 [features]
 default = []

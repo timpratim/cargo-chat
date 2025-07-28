@@ -25,6 +25,8 @@ impl RepoProfile {
     /// Create a repository profile by analyzing the given directory
     pub async fn from_directory(path: &Path) -> Result<RepoProfile> {
         let name = path
+            .canonicalize()
+            .map_err(|e| anyhow::anyhow!("Failed to canonicalize path: {}", e))?
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown-repo")
@@ -65,9 +67,12 @@ impl RepoProfile {
 
             // Check for build/config files
             if Self::is_build_file(file_name) {
-                build_files.push(file_name.to_string());
-                continue;
+            let file_name_string = file_name.to_string();
+            if !build_files.contains(&file_name_string) {
+                    build_files.push(file_name_string);
             }
+            continue;
+        }
 
             // Count lines by language
             if let Some(extension) = file_path.extension().and_then(|e| e.to_str()) {
